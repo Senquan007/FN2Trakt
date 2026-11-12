@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#0b1020" />
+    <title>FN2Trakt · 飞牛观影同步</title>
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('fn2t-theme')
+          if (t !== 'light' && t !== 'dark') {
+            t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+          }
+          document.documentElement.dataset.theme = t
+          if (t === 'dark') document.documentElement.classList.add('dark')
+          document.documentElement.style.colorScheme = t
+        } catch (e) {}
+      })()
+    </script>
+    <script type="module" crossorigin src="/assets/index-BMazgYQ6.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-FWlCzBNy.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

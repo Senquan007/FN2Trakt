@@ -1,0 +1,26 @@
+# --- Python ---
+backend/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# --- Node ---
+frontend/node_modules/
+frontend/dist/
+
+# --- Runtime ---
+data/*.db
+data/*.db-*
+data/.secret_key
+.cache/
+.env
+*.log
+
+# --- fnTV data (do not commit personal watch history) ---
+DB/*.db
+DB/*.db-*
+DB/*.sqlite
+
+# --- OS ---
+.DS_Store

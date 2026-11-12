@@ -1,0 +1,56 @@
+name: fn2trakt
+
+services:
+  fn2trakt:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: fn2trakt:3.0.0
+    container_name: fn2trakt
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+
+    ports:
+      - "${FN2TRAKT_HOST_PORT:-8080}:8080"
+
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+
+      FN2TRAKT_DATA_DIR: /data
+      FN2TRAKT_FNTV_DB_PATH: "/fntv/${FNTV_DB_FILE:-trimmedia.db}"
+      FN2TRAKT_PORT: "8080"
+
+      FN2TRAKT_SECRET_KEY: "${FN2TRAKT_SECRET_KEY:-}"
+      FN2TRAKT_COOKIE_SECURE: "${FN2TRAKT_COOKIE_SECURE:-false}"
+      FN2TRAKT_SESSION_DAYS: "${FN2TRAKT_SESSION_DAYS:-30}"
+
+      FN2TRAKT_ADMIN_USERNAME: "${FN2TRAKT_ADMIN_USERNAME:-}"
+      FN2TRAKT_ADMIN_PASSWORD: "${FN2TRAKT_ADMIN_PASSWORD:-}"
+
+      FN2TRAKT_SYNC_ENABLED: "${FN2TRAKT_SYNC_ENABLED:-true}"
+      FN2TRAKT_SYNC_INTERVAL_MINUTES: "${FN2TRAKT_SYNC_INTERVAL_MINUTES:-5}"
+      FN2TRAKT_TRAKT_TRUST_ENV: "${FN2TRAKT_TRAKT_TRUST_ENV:-true}"
+
+      HTTPS_PROXY: "${FN2TRAKT_HTTPS_PROXY:-}"
+      HTTP_PROXY: "${FN2TRAKT_HTTP_PROXY:-}"
+      NO_PROXY: "${FN2TRAKT_NO_PROXY:-localhost,127.0.0.1}"
+
+    volumes:
+      - "${DATA_DIR:-./data}:/data"
+      - "${FNTV_DB_DIR:-./DB}:/fntv:ro"
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

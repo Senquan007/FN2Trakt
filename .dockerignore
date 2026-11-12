@@ -1,0 +1,32 @@
+.git
+.gitignore
+.venv
+backend/.venv
+frontend/node_modules
+frontend/dist
+data
+DB
+release
+docs
+logo
+V*.zip
+*.zip
+.env
+*.log
+__pycache__
+*.pyc
+.pytest_cache
+.DS_Store
+backend/static
+backend/tests
+
+# --- build artifacts ---
+.buildx
+deploy
+
+# --- categorized artifacts ---
+his
+test
+.docker
+.workbuddy
+fn2trakt-*.tar.gz

@@ -1,0 +1,1 @@
+import{m as o,v as u,l as r}from"./index-BMazgYQ6.js";function d(s="(max-width: 720px)"){const a=r(!1);let e=null;const n=()=>{e&&(a.value=e.matches)};return o(()=>{var t;e=window.matchMedia(s),a.value=e.matches,(t=e.addEventListener)==null||t.call(e,"change",n)}),u(()=>{var t;(t=e==null?void 0:e.removeEventListener)==null||t.call(e,"change",n)}),a}export{d as u};
