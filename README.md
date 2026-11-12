@@ -26,9 +26,6 @@ FN2Trakt 是一个自托管的观影记录同步工具。
 
 它只读打开飞牛影视的 SQLite 数据库，按 TMDB / IMDB ID 匹配 Trakt 条目，把已经看完的电影和剧集写入 Trakt 观看历史。自带中文管理后台，支持多用户、设备码授权、手动匹配、失败重试、Trakt 历史回填、个人 API 和 Webhook。
 
-一句话：
-
-> **在飞牛看完，Trakt 自动记上。**
 
 ### 功能特性
 
@@ -42,7 +39,6 @@ FN2Trakt 做的事情就是：
 - 写入 Trakt 观看历史
 - 在本地保留一份可查询的记录和同步状态
 
-整个过程中，**飞牛数据库始终只读**。
 
 ---
 
@@ -127,8 +123,8 @@ FN2TRAKT_HOST_PORT=8080
 # 应用数据目录：fn2trakt.db、.secret_key、backups/
 DATA_DIR=/your/path/fn2trakt/data
 
-# 飞牛数据库所在目录（目录，不是单文件）
-FNTV_DB_DIR=/your/path/trim.media/database
+# 飞牛数据库所在目录（目录，不是单文件）默认目录
+FNTV_DB_DIR=/usr/local/apps/@appdata/trim.media/database 
 FNTV_DB_FILE=trimmedia.db
 
 # NAS 上执行 id -u / id -g
