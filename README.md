@@ -194,28 +194,28 @@ PGID=1000
 
 ## 🔁 写入飞牛（Trakt → 飞牛数据库）
 
-「开发者 → 写入飞牛」把 Trakt 观看历史写回飞牛 `item_user_play`，让飞牛 App 也显示为已看。
+「开发者 → 写入飞牛」把 Trakt 观看历史写回飞牛 `item_user_play`，让飞牛 App 也显示为已看。这是 v4 唯一会修改飞牛数据库的功能，只对管理员开放。
+
+### 操作流程
 
 1. 点击「拉取 Trakt 历史」，把完整 Trakt 历史同步到本地镜像（含飞牛库没有的条目）。
 2. 「匹配成功（将写入）」列出能匹配到飞牛媒体库的条目：已有播放记录的标记为「将更新」，在库但无记录标记为「将创建」。
 3. 「无法匹配（将跳过）」列出不在飞牛库、或缺少可播放文件的条目及原因，写入时自动跳过。
 4. 点击「开始写入飞牛」，两步确认：第一步核对写入 / 跳过数量，第二步最终确认。确认后自动备份飞牛数据库再写入。
+5. 写入完成后可在同页快速恢复（只覆盖飞牛数据库，不回滚本地 FN2Trakt 数据）。
 
 > 预览与写入之间如果数据发生变化（重新拉取、重新匹配），写入会被拒绝并提示重新预览，避免写入与预期不一致。
+> 已写入过的记录默认跳过；需要重写时打开工具栏的「含已写入」再预览。
 
-## ⚠️ Trakt → 飞牛数据库写入（v4）
+### 前置条件：数据库必须可写
 
-「开发者 → 写入飞牛」会把匹配到飞牛库的 Trakt 历史写入飞牛的 `item_user_play`，让飞牛 App 也显示为已看。
+与常规同步不同，写入飞牛需要容器对飞牛数据库有**写权限**：
 
-这是危险操作：
+- 主库 `trimmedia.db` 对 UID 1000 是 `rw`
+- 数据库目录 `rwx`（WAL 需要创建 `-shm`）
+- compose 里的 `/fntv` **不能加 `:ro`**
 
-- 只有管理员可见
-- 每次写入前自动备份飞牛数据库
-- 写入完成后可在同页快速恢复
-- **需要容器对飞牛数据库有写权限**（主库 `rw`、目录 `rwx`、`/fntv` 不能 `:ro`）
-- 恢复只覆盖飞牛数据库，不回滚本地 FN2Trakt 数据
-
-写入前先确认权限：
+写入前先验证：
 
 ```bash
 docker exec -u 1000 fn2trakt sh -c '
@@ -224,9 +224,9 @@ docker exec -u 1000 fn2trakt sh -c '
 '
 ```
 
-必须同时看到 `READ_OK` 和 `WRITE_OK`，否则「开始写入飞牛」会返回 400。
+必须同时看到 `READ_OK` 和 `WRITE_OK`，否则「开始写入飞牛」会返回 400（`detail` 会写明是不可写、读不到播放记录，还是飞牛用户不存在）。
 
-配置文件见 [docs/fntv-writeback.md](docs/fntv-writeback.md)，权限排查见 [docs/fntv-permissions.md](docs/fntv-permissions.md)。
+操作说明见 [docs/fntv-writeback.md](docs/fntv-writeback.md)，权限排查见 [docs/fntv-permissions.md](docs/fntv-permissions.md)。
 
 ## 🔌 个人 API
 
@@ -479,9 +479,11 @@ curl -s -H "Cookie: fn2t_session=<你的 session>" \
 
 - [飞牛数据库结构说明](docs/fntv-database.md)
 - [飞牛数据库 SQL Schema](docs/fntv-schema.sql)
-- [飞牛数据库权限与 Docker 挂载](docs/fntv-permissions.md)
+- [飞牛数据库权限与 Docker 挂载](docs/fntv-permissions.md)（读写权限、WAL、400 排查）
 - [Trakt → 飞牛写入与恢复](docs/fntv-writeback.md)
-- [HTTP API](docs/api.md)
+- [Docker 部署](docs/docker.md)
+- [HTTP API](docs/api.md) · [个人 API v1](docs/api-v1.md)
+- [UI 设计说明](docs/ui-design.md)
 
 ## 📄 说明
 
