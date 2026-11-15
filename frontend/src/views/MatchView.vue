@@ -43,6 +43,9 @@
                   <span v-if="row.tmdb_id"> · TMDB {{ row.tmdb_id }}</span>
                   <span v-if="row.imdb_id"> · IMDB {{ row.imdb_id }}</span>
                 </div>
+                <div v-if="row.orphan" class="tiny orphan-hint">
+                  飞牛媒体信息缺失，建议先「重新读取飞牛数据」后再匹配
+                </div>
               </div>
             </div>
           </template>
@@ -210,4 +213,5 @@ onMounted(load)
 }
 .media-type.movie { color: var(--warning-ink); background: var(--warning-soft); }
 .media-title { font-weight: 620; font-size: 13.5px; }
+.orphan-hint { color: var(--warning-ink, #b7791f); margin-top: 2px; }
 </style>

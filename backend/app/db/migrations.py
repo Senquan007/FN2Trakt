@@ -16,12 +16,23 @@ DEFAULT_REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
 LEGACY_KEYS = ("trakt.client_id", "trakt.client_secret", "trakt.redirect_uri")
 
 
+def _table_columns(conn, table: str) -> list[str]:
+    return [row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})")]
+
+
 def _add_missing_columns(engine: Engine) -> None:
     with engine.begin() as conn:
-        columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(trakt_account)")]
-        if "credential_id" not in columns:
+        columns = _table_columns(conn, "trakt_account")
+        if columns and "credential_id" not in columns:
             conn.exec_driver_sql("ALTER TABLE trakt_account ADD COLUMN credential_id INTEGER")
             logger.info("added trakt_account.credential_id")
+        webhook_columns = _table_columns(conn, "webhook_endpoint")
+        if webhook_columns and "format" not in webhook_columns:
+            conn.exec_driver_sql("ALTER TABLE webhook_endpoint ADD COLUMN format VARCHAR(16)")
+            # Existing endpoints keep NULL: resolve_format() then detects the
+            # platform from the URL, so 飞书 endpoints start working without
+            # being edited.
+            logger.info("added webhook_endpoint.format")
 
 
 def _legacy_value(db: Session, key: str) -> str | None:

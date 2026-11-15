@@ -29,7 +29,9 @@ class SettingsPayload(BaseModel):
     fntv_db_path: str | None = None
     sync_interval_minutes: int | None = None
     sync_enabled: bool | None = None
+    ingest_enabled: bool | None = None
     watched_threshold: float | None = None
+    match_retry_hours: int | None = None
 
 
 class PathPayload(BaseModel):
@@ -44,8 +46,10 @@ def get_settings(admin: AppUser = Depends(get_admin_user), db: Session = Depends
         "default_fntv_db_path": str(settings.fntv_db_path),
         "sync": {
             "enabled": get_bool(db, "sync.enabled", True),
+            "ingest_enabled": get_bool(db, "sync.ingest_enabled", True),
             "interval_minutes": max(1, get_int(db, "sync.interval_minutes", 5)),
             "watched_threshold": get_float(db, "sync.watched_threshold", 80.0),
+            "match_retry_hours": max(0, get_int(db, "sync.match_retry_hours", 12)),
         },
         "scheduler": scheduler.state(db),
         "trakt": {
@@ -78,6 +82,11 @@ def update_settings(
         set_setting(db, "sync.interval_minutes", str(minutes))
     if payload.sync_enabled is not None:
         set_setting(db, "sync.enabled", "true" if payload.sync_enabled else "false")
+    if payload.ingest_enabled is not None:
+        set_setting(db, "sync.ingest_enabled", "true" if payload.ingest_enabled else "false")
+    if payload.match_retry_hours is not None:
+        hours = max(0, min(720, int(payload.match_retry_hours)))
+        set_setting(db, "sync.match_retry_hours", str(hours))
     threshold_changed = False
     if payload.watched_threshold is not None:
         threshold = max(50.0, min(100.0, float(payload.watched_threshold)))

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -10,7 +11,9 @@ from sqlalchemy.orm import Session
 
 from app.db.models import MediaItem, MediaMatch, PlayRecord
 from app.services.credentials import active_bundle
+from app.services.settings_service import get_int
 from app.trakt.client import TraktClient, TraktError
+from app.utils.time import utcnow
 
 _PUNCT_RE = re.compile(r"[\s\-_:：·.,，。!！?？'\"“”‘’()（）\[\]【】/\\&]+")
 
@@ -34,7 +37,13 @@ class Target:
 
 
 def collect_targets(db: Session) -> dict[str, Target]:
-    """Build one match target per movie, and per show for episodes."""
+    """Build one match target per movie, and per show for episodes.
+
+    Episodes whose parent show could not be resolved still get their own
+    target keyed by the episode guid.  Without that fallback they were
+    invisible on the 媒体匹配 page even though 观看记录 listed them as
+    unmatched, because no target was ever created for them.
+    """
     targets: dict[str, Target] = {}
     rows = db.scalars(select(MediaItem).where(MediaItem.fn_type.in_(["Movie", "Episode"]))).all()
     for item in rows:
@@ -47,9 +56,12 @@ def collect_targets(db: Session) -> dict[str, Target]:
                 tmdb_id=item.tmdb_id,
                 imdb_id=item.imdb_id,
             )
-        elif item.show_guid and item.show_guid not in targets:
-            targets[item.show_guid] = Target(
-                guid=item.show_guid,
+        else:
+            key = item.show_guid or item.fn_guid
+            if key in targets:
+                continue
+            targets[key] = Target(
+                guid=key,
                 media_type="show",
                 title=item.show_title or item.title,
                 year=item.year,
@@ -57,6 +69,88 @@ def collect_targets(db: Session) -> dict[str, Target]:
                 imdb_id=item.imdb_id,
             )
     return targets
+
+
+@dataclass
+class TargetCard:
+    """A row on the 媒体匹配 page: one movie, or one show."""
+
+    guid: str
+    media_type: str
+    title: str
+    year: int | None
+    tmdb_id: int | None
+    imdb_id: str | None
+    count: int = 0
+    samples: list[str] = field(default_factory=list)
+    match: MediaMatch | None = None
+    orphan: bool = False
+
+    @property
+    def state(self) -> str:
+        return self.match.status if self.match is not None else "unmatched"
+
+
+def target_overview(db: Session, *, user_guid: str | None = None) -> dict[str, TargetCard]:
+    """One card per matchable target, including unattached plays.
+
+    The previous implementation iterated ``collect_targets()`` only, so a play
+    whose ``media_item`` row was missing (or whose episode had no resolved
+    show) never showed up here even though 观看记录 counted it as unmatched.
+    Building the overview from the play records themselves makes both pages
+    agree by construction.
+    """
+    targets = collect_targets(db)
+    media_by_guid = {
+        item.fn_guid: item
+        for item in db.scalars(
+            select(MediaItem).where(MediaItem.fn_type.in_(["Movie", "Episode", "Video", "Unknown"]))
+        ).all()
+    }
+    matches = {row.media_guid: row for row in db.scalars(select(MediaMatch)).all()}
+
+    cards: dict[str, TargetCard] = {
+        guid: TargetCard(
+            guid=guid,
+            media_type=target.media_type,
+            title=target.title,
+            year=target.year,
+            tmdb_id=target.tmdb_id,
+            imdb_id=target.imdb_id,
+            match=matches.get(guid),
+        )
+        for guid, target in targets.items()
+    }
+
+    plays = db.scalars(select(PlayRecord).where(PlayRecord.completed.is_(True))).all()
+    for play in plays:
+        if user_guid and play.fn_user_guid != user_guid:
+            continue
+        media = media_by_guid.get(play.fn_item_guid)
+        if media is None:
+            key = play.fn_item_guid
+        elif media.fn_type == "Episode":
+            key = media.show_guid or media.fn_guid
+        else:
+            key = media.fn_guid
+        card = cards.get(key)
+        if card is None:
+            card = TargetCard(
+                guid=key,
+                media_type="movie" if media is not None and media.fn_type == "Movie" else "show",
+                title=(media.title if media is not None else "未知条目"),
+                year=media.year if media is not None else None,
+                tmdb_id=media.tmdb_id if media is not None else None,
+                imdb_id=media.imdb_id if media is not None else None,
+                match=matches.get(key),
+                orphan=True,
+            )
+            cards[key] = card
+        card.count += 1
+        if media is not None and len(card.samples) < 3:
+            card.samples.append(media.title)
+
+    return cards
 
 
 def _ids_from_target(target: Target) -> dict[str, Any]:
@@ -129,11 +223,23 @@ def _pick_exact(target: Target, candidates: list[dict[str, Any]]) -> dict[str, A
     return None
 
 
+def _cooling_down(row: MediaMatch, hours: int) -> bool:
+    """Recently searched titles are not searched again on every cycle.
+
+    Without this, an automatic read every few minutes would hammer the Trakt
+    search API for titles that simply are not on Trakt.
+    """
+    if hours <= 0 or row.updated_at is None:
+        return False
+    return (utcnow() - row.updated_at) < timedelta(hours=hours)
+
+
 def ensure_matches(db: Session, allow_search: bool = True) -> dict[str, int]:
     targets = collect_targets(db)
     existing = {row.media_guid: row for row in db.scalars(select(MediaMatch)).all()}
+    retry_hours = max(0, get_int(db, "sync.match_retry_hours", 12))
 
-    created = updated = by_id = by_search = unmatched = 0
+    created = updated = by_id = by_search = unmatched = skipped_recent = 0
     bundle = active_bundle(db)
     search_client: TraktClient | None = None
     search_budget = 30
@@ -147,6 +253,10 @@ def ensure_matches(db: Session, allow_search: bool = True) -> dict[str, int]:
                 continue
             if current is not None and current.status == "auto":
                 # Refresh only when the source IDs disappeared; never demote silently.
+                continue
+            if current is not None and current.status == "unmatched" and _cooling_down(current, retry_hours):
+                unmatched += 1
+                skipped_recent += 1
                 continue
 
             ids = _ids_from_target(target)
@@ -203,7 +313,8 @@ def ensure_matches(db: Session, allow_search: bool = True) -> dict[str, int]:
                     )
                     created += 1
                 elif current.status == "unmatched":
-                    pass
+                    # Restart the cooldown so the next cycle does not search again.
+                    current.updated_at = utcnow()
                 unmatched += 1
         db.commit()
     finally:
@@ -217,6 +328,7 @@ def ensure_matches(db: Session, allow_search: bool = True) -> dict[str, int]:
         "by_id": by_id,
         "by_search": by_search,
         "unmatched": unmatched,
+        "skipped_recent": skipped_recent,
     }
 
 

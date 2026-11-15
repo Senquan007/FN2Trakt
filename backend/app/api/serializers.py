@@ -56,6 +56,47 @@ def sync_dict(record: SyncRecord | None) -> dict[str, Any] | None:
     }
 
 
+WRITEBACK_ACTION = "fntv_writeback"
+
+
+def writeback_dict(match: MediaMatch | None, sync: SyncRecord | None) -> dict[str, Any]:
+    """State of the Trakt -> 飞牛 direction for one play.
+
+    ``SyncRecord.action`` tells the two directions apart: ``history`` rows are
+    uploads performed by FN2Trakt, ``fntv_writeback`` rows are the history
+    written into fnTV.  Without that distinction a written record looked
+    identical to a normally-synced one, which is why the UI never showed
+    "已写入飞牛".
+
+    A written record is reported even when there is no ``MediaMatch``: the
+    write-back matches Trakt history against the fnTV library directly, so it
+    can legitimately write a play that the uploader has never matched.
+    """
+    if sync is not None and (sync.action or "") == WRITEBACK_ACTION and sync.status == "success":
+        return {"status": "written", "at": to_iso_z(sync.updated_at)}
+    if match is None or match.status in {"unmatched", "rejected"}:
+        return {"status": "none", "at": None}
+    return {"status": "pending", "at": None}
+
+
+def progress_display(play: PlayRecord) -> float:
+    """Progress to show in the UI, which is not always the stored progress.
+
+    fnTV resets ``ts`` (the resume position) to 0 once an item is marked as
+    watched, and some items have no runtime at all.  In both cases the stored
+    progress is 0 or NULL while the row is already "completed", which used to
+    render as a "已看完" chip next to a 0% bar.  A completed item is shown as
+    100% because that is what the label claims; the raw value stays untouched
+    in ``progress_percent``.
+    """
+    value = play.progress_percent
+    if play.completed:
+        return 100.0
+    if value is None:
+        return 0.0
+    return round(max(0.0, min(float(value), 100.0)), 1)
+
+
 def play_dict(
     play: PlayRecord,
     media: MediaItem | None,
@@ -82,6 +123,7 @@ def play_dict(
         "position_seconds": play.position_seconds,
         "runtime_seconds": play.runtime_seconds,
         "progress_percent": play.progress_percent,
+        "progress_display": progress_display(play),
         "completed": play.completed,
         "watched": play.watched,
         "fn_create_time": to_iso_z(play.fn_create_time),
@@ -92,6 +134,7 @@ def play_dict(
             target.show_guid if target.fn_type == "Episode" and target.show_guid else target.fn_guid
         ),
         "sync": sync_dict(sync),
+        "writeback": writeback_dict(match, sync),
         "trakt_url": trakt_url(target, match),
     }
 

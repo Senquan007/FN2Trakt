@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -10,10 +11,12 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
 
+from app import __version__ as APP_VERSION
 from app.api import auth as auth_api
 from app.api import (
     dashboard,
     fntv,
+    fntv_writeback,
     history,
     media,
     plays,
@@ -69,6 +72,15 @@ async def lifespan(_app: FastAPI):
         # threshold after an upgrade.
         recompute_completed(db, get_float(db, "sync.watched_threshold", 80.0))
         scheduler.configure(db)
+        # Announce media that is still unmatched.  Idempotent: the stored
+        # signature means a restart does not repeat an already-sent notice,
+        # while a freshly configured webhook still gets the first one.
+        try:
+            from app.services.webhooks import notify_unmatched
+
+            notify_unmatched(db, trigger="startup")
+        except Exception:  # notifications must never block startup
+            logger.exception("failed to notify unmatched media at startup")
     finally:
         db.close()
     scheduler.start()
@@ -77,7 +89,7 @@ async def lifespan(_app: FastAPI):
     scheduler.shutdown()
 
 
-app = FastAPI(title=settings.app_name, version="3.0.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version=APP_VERSION, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -103,15 +115,31 @@ async def fntv_error_handler(_request: Request, exc: FnTvError):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
+@app.exception_handler(sqlite3.Error)
+async def sqlite_error_handler(_request: Request, exc: sqlite3.Error):
+    """A hiccup on the fnTV mount must never surface as an opaque HTTP 500.
+
+    Reading ``trimmedia.db`` can fail for a second while fnTV checkpoints the
+    WAL or while a network mount reconnects.  Readers retry and fall back to a
+    snapshot; if that still fails the user gets a retryable 503 instead.
+    """
+    logger.warning("sqlite error: %s", exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "飞牛数据库暂时无法读取（可能正在被写入或挂载不稳定），请稍后重试"},
+    )
+
+
 @app.get("/api/health")
 def health():
-    return {"ok": True, "app": settings.app_name, "version": "3.0.0"}
+    return {"ok": True, "app": settings.app_name, "version": APP_VERSION}
 
 
 app.include_router(auth_api.router)
 app.include_router(auth_api.setup_router)
 app.include_router(users.router)
 app.include_router(fntv.router)
+app.include_router(fntv_writeback.router)
 app.include_router(trakt.router)
 app.include_router(media.router)
 app.include_router(plays.router)

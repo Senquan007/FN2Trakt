@@ -9,6 +9,7 @@ from app.api.deps import get_admin_user, get_current_user
 from app.api.serializers import media_display
 from app.db.models import AppUser, MediaItem, PlayRecord, SyncRecord, SyncRun, TraktAccount
 from app.db.session import get_db
+from app.services.refresh import RefreshBusy, refresh_fntv
 from app.services.sync import preview_sync, start_sync, sync_single_play
 from app.utils.time import humanize_age, to_iso_z
 
@@ -17,6 +18,25 @@ router = APIRouter(prefix="/api/sync", tags=["sync"])
 
 class RunPayload(BaseModel):
     app_user_id: int | None = None
+
+
+def _ingest_before_sync(db: Session) -> dict | None:
+    """Pick up plays fnTV recorded since the last read.
+
+    The scheduled job does this on every tick; doing it here as well means a
+    manual "立即同步" never uploads a stale mirror.  The check is cheap when the
+    database file did not change.
+    """
+    from app.fntv import FnTvError
+
+    try:
+        return refresh_fntv(db, trigger="manual-sync")
+    except RefreshBusy:
+        return None
+    except FnTvError:
+        return None
+    except Exception:  # pragma: no cover - the upload must still run
+        return None
 
 
 @router.get("/preview")
@@ -41,18 +61,20 @@ def run(
     account = db.scalar(select(TraktAccount).where(TraktAccount.app_user_id == target.id))
     if account is None:
         raise HTTPException(status_code=400, detail="该账号尚未绑定 Trakt")
+    ingested = _ingest_before_sync(db)
     run_row = start_sync(target.id, "manual")
     if run_row is None:
         raise HTTPException(status_code=409, detail="已有同步任务正在运行，请稍后再试")
-    return {"run_id": run_row.id, "status": run_row.status}
+    return {"run_id": run_row.id, "status": run_row.status, "ingest": ingested}
 
 
 @router.post("/run-all")
-def run_all_endpoint(admin: AppUser = Depends(get_admin_user)):
+def run_all_endpoint(admin: AppUser = Depends(get_admin_user), db: Session = Depends(get_db)):
     from app.services.sync import run_all
 
+    ingested = _ingest_before_sync(db)
     run_ids = run_all("manual")
-    return {"run_ids": run_ids, "count": len(run_ids)}
+    return {"run_ids": run_ids, "count": len(run_ids), "ingest": ingested}
 
 
 @router.post("/play/{play_id}")

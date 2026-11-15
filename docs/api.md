@@ -65,7 +65,7 @@
 | --- | --- | --- |
 | GET | `/plays` | 分页列表；支持状态、用户、类型、关键词、日期过滤 |
 | GET | `/plays/{id}` | 单条详情（含原始记录、同步请求） |
-| GET | `/media/targets` | 需要处理的媒体（未匹配 / 自动 / 手动 / 忽略） |
+| GET | `/media/targets` | 需要处理的媒体（未匹配 / 自动 / 手动 / 忽略）；孤儿播放记录（媒体条目缺失）也会列出，`orphan=true` |
 | GET | `/media/search` | 搜索 Trakt 候选条目 |
 | POST | `/media/match` | 保存手动匹配 |
 | POST | `/media/reject` | 忽略媒体 |
@@ -76,7 +76,25 @@
 - `all`、`completed`
 - `pending`（已看完、已匹配、未上传）
 - `synced`、`failed`、`blocked`
-- `unmatched`（含被忽略）
+- `unmatched`（真正未匹配到 Trakt）
+- `rejected`（已忽略，与 `unmatched` 分开，和「媒体匹配」分组一致）
+- `writeback_pending`（匹配成功、尚未写入飞牛，保留给脚本使用）
+- `writeback_written`（已写入飞牛，保留给脚本使用）
+
+每条记录带 `writeback` 字段描述飞牛方向的状态：
+
+```json
+"writeback": {"status": "written", "at": "2026-11-15T16:23:06Z"}
+```
+
+`status` 取值：`none`（未匹配或已忽略）、`pending`（匹配成功待写入）、`written`（已写入飞牛）。
+前端「观看记录」只展示 Trakt 同步状态，不再渲染这两个筛选与 `writeback` 标记，字段保留给自动化脚本按需使用。
+`summary` 同步返回 `rejected`、`writeback_pending`、`writeback_written` 计数。
+
+进度字段有两个：
+
+- `progress_percent`：飞牛库里的原始进度（`播放位置 / 时长`），已看完的条目可能因为播放位置被清零而变成 `0`；
+- `progress_display`：供界面展示的进度，`completed=true` 时固定为 `100`，其余情况等于原始进度。
 
 ## 同步
 
@@ -107,19 +125,15 @@
 
 Trakt 侧错误会映射为 400，并保留可读原因（例如「Trakt 未找到该条目」「授权码已过期」）。
 
-## v3：Trakt 历史回填（管理员）
+## v3：Trakt 历史镜像（管理员）
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/trakt/history/accounts` | 可回填的 Trakt 账号列表 |
-| GET | `/trakt/history/summary?account_id=` | 本地历史镜像计数、最近拉取/回填 |
-| POST | `/trakt/history/pull` | 拉取全部 Trakt 历史并写入 `trakt_history` |
-| GET | `/trakt/history/preview?account_id=` | 预演将更新哪些本地播放记录（只读） |
-| POST | `/trakt/history/apply` | 备份数据库后执行回填；必须传 `{"confirm": true}` |
+| GET | `/trakt/history/accounts` | 可拉取历史的 Trakt 账号列表 |
+| GET | `/trakt/history/summary?account_id=` | 本地历史镜像计数、最近拉取 / 写入时间 |
+| POST | `/trakt/history/pull` | 拉取全部 Trakt 历史并写入 `trakt_history`，同时完成飞牛媒体库匹配 |
 
-回填会处理「Trakt 历史能匹配到飞牛媒体库」的记录：已有 PlayRecord 的更新，没有 PlayRecord 的会补建 `media_item` + `play_record`；飞牛库没有的条目只保存在历史镜像中，供 API 查询。
-
-执行 `apply` 前会自动使用 SQLite backup API 备份到 `data/backups/fn2trakt-<时间>-before-backfill.db`，响应返回 `backup_path`。
+> v4.1.2 起，「Trakt 回填（写入本地假记录）」已移除：`/trakt/history/preview` 与 `/trakt/history/apply` 不再提供。请使用下方的「写入飞牛」，它只写飞牛数据库，不伪造本地播放记录。
 
 ## v3：个人 API Token
 
@@ -148,15 +162,49 @@ Trakt 侧错误会映射为 400，并保留可读原因（例如「Trakt 未找�
 - `sync.failed`：同步任务失败或部分失败
 - `sync.unmatched`：存在未匹配 / 上传失败的记录（同一批记录只提醒一次）
 - `sync.completed`：同步完成且有新记录上传
-- `backfill.completed`：Trakt 历史回填完成
+- `backfill.completed`：写入飞牛完成（旧名“回填”）
 - `test`：测试通知
 
-请求体是 JSON，包含 `event`、`version`、`sent_at`、`data`。如果端点配置了 Secret，会附加：
+端点的 `format` 决定请求体形状：`generic`（默认，FN2Trakt 原始 JSON）、`feishu`（飞书自定义机器人）、`dingtalk`（钉钉加签）、`wecom`（企业微信群机器人）。新建时若不传则按 URL 自动识别。
+
+通用 JSON 请求体包含 `event`、`version`、`sent_at`、`data`。如果端点配置了 Secret，会附加：
 
 ```http
 X-FN2Trakt-Event: sync.failed
-X-FN2Trakt-Delivery: 123
 X-FN2Trakt-Signature: sha256=<hex hmac-sha256 of raw body>
 ```
 
+飞书要求 `timestamp` / `sign` 位于请求体内并使用 `msg_type` + `content`，否则返回 `19021 sign match fail`；v4.1.2 已按官方算法实现。
+
 失败会在 5 分钟后自动重试，最多 3 次；可在「开发者 → Webhook」查看投递结果。
+
+## v4：Trakt → 飞牛数据库写入（管理员，危险）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/fntv/writeback/preview?account_id=` | 预演将写入飞牛 `item_user_play` 的记录（只读，使用本地已拉取的历史） |
+| POST | `/fntv/writeback/preview` | 预演并可先拉取 Trakt 历史（`{"account_id": 1, "pull": true, "include_written": false}`） |
+| POST | `/fntv/writeback/apply` | 备份飞牛数据库后写入；必须传 `{"confirm": true, "expected_total": <预览条数>}`；`include_written=true` 才会重写已写入过的记录 |
+| GET | `/fntv/backups` | 列出飞牛数据库备份 |
+| POST | `/fntv/restore` | 用指定备份恢复飞牛数据库；必须传 `{"confirm": true}` |
+
+预览返回 `summary.already_written`（已写入过、默认跳过）、`items`（匹配成功待写入）与 `written_items`（已写入）。
+默认跳过已写入记录，避免重复写入同一个 Trakt 历史。
+
+写入前会使用 SQLite backup API 备份到：
+
+```text
+DATA_DIR/backups/fntv-YYYYMMDD-HHMMSS-before-writeback.db
+```
+
+恢复前会再备份当前数据库：
+
+```text
+DATA_DIR/backups/fntv-YYYYMMDD-HHMMSS-before-restore.db
+```
+
+恢复只覆盖飞牛数据库，不恢复 FN2Trakt 本地数据库。
+
+`apply` 会校验 `expected_total`：如果预览之后待写入条数发生变化，会返回 400 并提示重新预览。响应中的 `skipped` 为无法匹配（不在媒体库 / 缺少可播放文件）而被跳过的条数。
+
+> 该功能需要容器对飞牛数据库有写权限；普通同步仍然只读。

@@ -92,7 +92,18 @@ def list_plays(
     end = _parse_date(date_to, end=True)
 
     rows = []
-    summary = {"total": 0, "completed": 0, "synced": 0, "pending": 0, "failed": 0, "blocked": 0, "unmatched": 0}
+    summary = {
+        "total": 0,
+        "completed": 0,
+        "synced": 0,
+        "pending": 0,
+        "failed": 0,
+        "blocked": 0,
+        "unmatched": 0,
+        "rejected": 0,
+        "writeback_pending": 0,
+        "writeback_written": 0,
+    }
     for play in plays:
         media = media_map.get(play.fn_item_guid)
         target_guid = (
@@ -129,8 +140,12 @@ def list_plays(
 
         if not play.completed:
             state = "incomplete"
-        elif match is None or match.status in {"unmatched", "rejected"}:
+        elif match is None or match.status == "unmatched":
             state = "unmatched"
+        elif match.status == "rejected":
+            # Kept apart from "unmatched": 媒体匹配 lists rejected items under
+            # 已忽略, so lumping them together made the two pages disagree.
+            state = "rejected"
         elif sync is not None:
             # SyncRecord stores "success"; the API/UI state is "synced".
             state = "synced" if sync.status == "success" else sync.status
@@ -139,8 +154,16 @@ def list_plays(
 
         if status == "completed" and state == "incomplete":
             continue
-        if status in {"pending", "synced", "failed", "blocked", "unmatched"} and state != status:
+        if status in {"pending", "synced", "failed", "blocked", "unmatched", "rejected"} and state != status:
             continue
+
+        item = play_dict(play, media, match, sync, usernames.get(play.fn_user_guid))
+        item["state"] = state
+        writeback = item["writeback"]["status"]
+        if status in {"writeback_pending", "writeback_written"}:
+            expected = "written" if status == "writeback_written" else "pending"
+            if writeback != expected:
+                continue
 
         summary["total"] += 1
         if play.completed:
@@ -153,11 +176,15 @@ def list_plays(
                 summary["blocked"] += 1
             elif state == "unmatched":
                 summary["unmatched"] += 1
+            elif state == "rejected":
+                summary["rejected"] += 1
             else:
                 summary["pending"] += 1
+            if writeback == "pending":
+                summary["writeback_pending"] += 1
+            elif writeback == "written":
+                summary["writeback_written"] += 1
 
-        item = play_dict(play, media, match, sync, usernames.get(play.fn_user_guid))
-        item["state"] = state
         rows.append(item)
 
     total = len(rows)
@@ -205,8 +232,10 @@ def play_detail(play_id: int, user: AppUser = Depends(get_current_user), db: Ses
     payload = load_play_rows(db, [play], account, {play.fn_user_guid: fn_user.username if fn_user else ""})[0]
     if not play.completed:
         payload["state"] = "incomplete"
-    elif match is None or match.status in {"unmatched", "rejected"}:
+    elif match is None or match.status == "unmatched":
         payload["state"] = "unmatched"
+    elif match.status == "rejected":
+        payload["state"] = "rejected"
     elif sync is not None:
         payload["state"] = "synced" if sync.status == "success" else sync.status
     else:

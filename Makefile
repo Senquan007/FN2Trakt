@@ -1,4 +1,4 @@
-.PHONY: install install-web build run dev schema clean docker-build docker-up docker-down docker-logs
+.PHONY: install install-web build run dev test schema clean docker-build docker-up docker-down docker-logs
 
 PY := backend/.venv/bin/python
 PIP := backend/.venv/bin/pip
@@ -20,11 +20,15 @@ run:
 dev:
 	./scripts/dev.sh
 
+test:
+	$(PIP) install -q -r backend/requirements-dev.txt
+	cd backend && .venv/bin/python -m pytest tests -q
+
 schema:
 	$(PY) -c "import sys; sys.path.insert(0,'backend'); from pathlib import Path; from app.fntv import dump_schema; Path('docs/fntv-schema.sql').write_text(dump_schema(Path('DB/trimmedia.db')), encoding='utf-8')"
 
 docker-build:
-	docker compose -f docker-compose.build.yml build
+	docker compose build
 
 docker-up:
 	docker compose up -d

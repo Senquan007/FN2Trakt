@@ -5,7 +5,7 @@
         <h2 class="page-title">{{ isAdmin ? '开发者' : 'API 访问' }}</h2>
         <p class="page-sub">
           {{ isAdmin
-            ? 'Trakt 观看历史回填、个人 API Token 与 Webhook 通知。'
+            ? '把 Trakt 观看历史写入飞牛、个人 API Token 与 Webhook 通知。'
             : '创建个人 API Token，用只读接口读取你的 Trakt 观看历史与媒体库状态。' }}
         </p>
       </div>
@@ -15,15 +15,15 @@
       </div>
     </div>
 
-    <el-tabs v-model="tab" class="dev-tabs">
-      <el-tab-pane v-if="isAdmin" label="Trakt 回填" name="backfill">
-        <el-alert type="warning" :closable="false" show-icon class="mb-16 backfill-alert">
-          <template #title>回填会修改或新增本地观看记录</template>
+    <el-tabs v-model="tab" class="dev-tabs" @tab-change="onTabChange">
+      <el-tab-pane v-if="isAdmin" label="写入飞牛" name="writeback">
+        <el-alert type="error" :closable="false" show-icon class="mb-16 writeback-alert">
+          <template #title>危险操作：会直接修改飞牛数据库</template>
           <template #default>
             <div class="alert-line">
-              点击「开始回填」时，会先自动备份本地数据库到
-              <code>{{ summary.backup_dir || 'data/backups' }}</code>，然后才写入记录。
-              已有播放记录会被覆盖进度与时间；在飞牛库但还没有播放记录的条目，会新建一条回填记录。
+              把 Trakt 观看历史写入飞牛 <code>item_user_play</code> 表，让飞牛 App 也显示为已看。
+              只会写入能在飞牛媒体库中匹配到的条目，匹配不到（不在库 / 缺少可播放文件）的记录会列在下方并自动跳过。
+              写入前自动备份到 <code>{{ wb.backup_dir || 'data/backups' }}</code>，写入后可随时恢复。
             </div>
           </template>
         </el-alert>
@@ -34,7 +34,7 @@
             v-model="accountId"
             placeholder="选择 Trakt 账号"
             style="width: 240px"
-            @change="loadBackfill"
+            @change="loadWriteback"
           >
             <el-option
               v-for="item in accounts"
@@ -47,59 +47,78 @@
             当前账号：{{ accounts[0].username }} · @{{ accounts[0].trakt_username }}
           </span>
           <span v-else class="tiny muted">还没有绑定 Trakt 账号</span>
+          <span v-if="wb.target_user" class="chip info">
+            目标飞牛用户：{{ wb.target_user.username }}
+          </span>
           <div class="toolbar-actions">
-            <el-button :icon="Download" :loading="pulling" :disabled="!accountId" @click="pullHistory">
+            <el-button :icon="Download" :loading="wbPulling" :disabled="!accountId" @click="pullAndPreview">
               拉取 Trakt 历史
             </el-button>
-            <el-button :icon="View" :loading="previewing" :disabled="!accountId" @click="loadPreview">
-              预览回填
+            <el-button :icon="View" :loading="wbLoading" :disabled="!accountId" @click="loadWriteback">
+              刷新预览
             </el-button>
-            <el-button type="primary" :icon="Upload" :disabled="!preview.can_apply" @click="openApply">
-              开始回填
+            <el-switch
+              v-model="wbIncludeWritten"
+              active-text="含已写入"
+              inline-prompt
+              style="margin: 0 4px"
+              @change="loadWriteback"
+            />
+            <el-button type="danger" :icon="WarningFilled" :disabled="!wb.can_apply" @click="openWbApply">
+              开始写入飞牛
             </el-button>
           </div>
         </div>
+
+        <el-alert v-if="wb.error" type="error" :closable="false" show-icon class="mb-16" :title="wb.error" />
 
         <div class="mini-stats">
           <div class="mini-stat">
-            <span>已存 Trakt 历史</span>
-            <b>{{ summary.total || 0 }}</b>
-            <small>{{ summary.last_pull_at ? '拉取于 ' + formatDateTime(summary.last_pull_at) : '尚未拉取' }}</small>
+            <span>Trakt 历史总数</span>
+            <b>{{ wb.summary?.history_total || 0 }}</b>
+            <small>{{ wb.last_pull_at ? '拉取于 ' + formatDateTime(wb.last_pull_at) : '尚未拉取' }}</small>
           </div>
           <div class="mini-stat accent">
-            <span>可回填本地记录</span>
-            <b>{{ (preview.summary?.update || 0) + (preview.summary?.create || 0) }}</b>
-            <small>{{ preview.summary?.update || 0 }} 更新 · {{ preview.summary?.create || 0 }} 新建</small>
+            <span>匹配成功，待写入</span>
+            <b>{{ wb.summary?.total || 0 }}</b>
+            <small>{{ wb.summary?.update || 0 }} 更新 · {{ wb.summary?.create || 0 }} 新建</small>
           </div>
           <div class="mini-stat">
-            <span>在库但无本地记录</span>
-            <b>{{ preview.summary?.create || 0 }}</b>
-            <small>将新建播放记录</small>
+            <span>已写入飞牛</span>
+            <b>{{ wb.summary?.already_written || 0 }}</b>
+            <small>{{ wbIncludeWritten ? '本次会重复写入' : '已自动跳过' }}</small>
           </div>
           <div class="mini-stat">
-            <span>不在飞牛媒体库</span>
-            <b>{{ preview.summary?.not_in_library || 0 }}</b>
-            <small>只保存在 Trakt 历史镜像中</small>
+            <span>无法匹配，将跳过</span>
+            <b>{{ wb.summary?.skipped || 0 }}</b>
+            <small>{{ wb.summary?.not_in_library || 0 }} 不在媒体库</small>
+          </div>
+          <div class="mini-stat mini-wide">
+            <span>目标飞牛用户</span>
+            <b class="mini-user">{{ wb.target_user?.username || '未绑定' }}</b>
+            <span class="chip" :class="wb.writable ? 'success' : 'danger'">
+              {{ wb.writable ? '数据库可写' : '数据库不可写' }}
+            </span>
           </div>
         </div>
 
-        <div v-if="applyResult" class="apply-result">
-          <el-icon><CircleCheckFilled /></el-icon>
+        <div v-if="wbResult" class="apply-result danger-result">
+          <el-icon><WarningFilled /></el-icon>
           <div>
-            <b>{{ applyResult.message }}</b>
-            <div class="tiny muted">备份文件：<code>{{ applyResult.backup_path }}</code></div>
+            <b>{{ wbResult.message }}</b>
+            <div class="tiny muted">备份文件：<code>{{ wbResult.backup_path }}</code></div>
           </div>
         </div>
 
         <div class="panel mt-16">
           <div class="panel-head">
             <div>
-              <h3 class="panel-title"><el-icon><List /></el-icon> 回填预览</h3>
-              <p class="panel-desc">预览只显示前 20 条；实际回填会处理全部匹配记录。不在飞牛库的记录会被忽略。</p>
+              <h3 class="panel-title"><el-icon><Upload /></el-icon> 匹配成功（将写入）</h3>
+              <p class="panel-desc">预览只显示前 20 条；实际会处理全部匹配成功的记录。最近写入：{{ wb.last_writeback_at ? formatDateTime(wb.last_writeback_at) : '—' }}</p>
             </div>
-            <span class="chip info">将处理 {{ (preview.summary?.update || 0) + (preview.summary?.create || 0) }} 条</span>
+            <span class="chip danger">将写入 {{ wb.summary?.total || 0 }} 条</span>
           </div>
-          <el-table :data="preview.items || []" style="width: 100%" empty-text="暂无待回填记录">
+          <el-table :data="wb.items || []" style="width: 100%" empty-text="没有待写入的记录：可能已全部写入，或还没拉取 Trakt 历史">
             <el-table-column label="媒体" min-width="240">
               <template #default="{ row }">
                 <div class="media-cell">
@@ -118,19 +137,114 @@
             <el-table-column label="Trakt 观看时间" width="180">
               <template #default="{ row }">{{ formatDateTime(row.watched_at) }}</template>
             </el-table-column>
-            <el-table-column label="本地当前状态" width="160">
+            <el-table-column label="飞牛当前状态" width="160">
               <template #default="{ row }">
                 <span class="tiny muted">
-                  <template v-if="row.state === 'create'">无本地记录</template>
-                  <template v-else>{{ row.current_completed ? '已看完' : '未看完' }} · {{ row.current_progress ?? 0 }}%</template>
+                  <template v-if="row.state === 'create'">无播放记录</template>
+                  <template v-else>{{ row.current_watched ? '已看' : '未看完' }} · {{ row.current_ts ?? 0 }}s</template>
                 </span>
               </template>
             </el-table-column>
             <el-table-column label="结果" width="100">
               <template #default="{ row }">
-                <span class="chip info">
+                <span class="chip" :class="row.state === 'create' ? 'danger' : 'info'">
                   {{ row.state === 'create' ? '将创建' : '将更新' }}
                 </span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <div v-if="(wb.summary?.already_written || 0) > 0" class="panel mt-16">
+          <div class="panel-head">
+            <div>
+              <h3 class="panel-title"><el-icon><CircleCheck /></el-icon> 已写入飞牛（不会重复写入）</h3>
+              <p class="panel-desc">这些 Trakt 历史已经成功写入过飞牛；如需重写，打开右上角「含已写入」后重新预览。</p>
+            </div>
+            <span class="chip success">{{ wb.summary?.already_written || 0 }} 条已写入</span>
+          </div>
+          <el-table :data="wb.written_items || []" style="width: 100%" empty-text="还没有写入记录">
+            <el-table-column label="媒体" min-width="260">
+              <template #default="{ row }">
+                <div class="media-cell">
+                  <span class="media-type">{{ row.type === 'episode' ? '剧' : '影' }}</span>
+                  <div style="min-width: 0">
+                    <div class="ellipsis">
+                      {{ row.type === 'episode'
+                        ? `${row.show_title || '未知剧集'} - S${String(row.season || 0).padStart(2, '0')}E${String(row.episode || 0).padStart(2, '0')}`
+                        : row.title }}
+                    </div>
+                    <div class="tiny muted">{{ row.title }}</div>
+                  </div>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="Trakt 观看时间" width="180">
+              <template #default="{ row }">{{ formatDateTime(row.watched_at) }}</template>
+            </el-table-column>
+            <el-table-column label="写入时间" width="180">
+              <template #default="{ row }">{{ formatDateTime(row.written_at) }}</template>
+            </el-table-column>
+            <el-table-column label="状态" width="110">
+              <template #default><span class="chip success">已写入</span></template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <div class="panel mt-16">
+          <div class="panel-head">
+            <div>
+              <h3 class="panel-title"><el-icon><WarningFilled /></el-icon> 无法匹配（将跳过）</h3>
+              <p class="panel-desc">不在飞牛媒体库，或飞牛缺少可播放文件；这些记录不会写入，也不会影响其他条目。</p>
+            </div>
+            <span class="chip muted">{{ wb.summary?.skipped || 0 }} 条跳过</span>
+          </div>
+          <el-table :data="wb.skipped_items || []" style="width: 100%" empty-text="没有跳过的记录">
+            <el-table-column label="媒体" min-width="260">
+              <template #default="{ row }">
+                <div class="media-cell">
+                  <span class="media-type">{{ row.type === 'episode' ? '剧' : '影' }}</span>
+                  <div style="min-width: 0">
+                    <div class="ellipsis">
+                      {{ row.type === 'episode'
+                        ? `${row.show_title || '未知剧集'} - S${String(row.season || 0).padStart(2, '0')}E${String(row.episode || 0).padStart(2, '0')}`
+                        : row.title }}
+                    </div>
+                    <div class="tiny muted">{{ row.title }}</div>
+                  </div>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="Trakt 观看时间" width="180">
+              <template #default="{ row }">{{ formatDateTime(row.watched_at) }}</template>
+            </el-table-column>
+            <el-table-column label="跳过原因" width="180">
+              <template #default="{ row }"><span class="chip muted">{{ row.reason }}</span></template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <div class="panel mt-16">
+          <div class="panel-head">
+            <div>
+              <h3 class="panel-title"><el-icon><FolderOpened /></el-icon> 飞牛数据库备份</h3>
+              <p class="panel-desc">每次写入或恢复前自动生成；恢复会用备份覆盖当前飞牛数据库。</p>
+            </div>
+            <el-button :icon="Refresh" :loading="wbLoading" @click="loadWriteback">刷新</el-button>
+          </div>
+          <el-table :data="wbBackups" style="width: 100%" empty-text="暂无备份">
+            <el-table-column label="备份文件" min-width="300">
+              <template #default="{ row }"><code class="mono tiny">{{ row.name }}</code></template>
+            </el-table-column>
+            <el-table-column label="大小" width="100">
+              <template #default="{ row }">{{ formatSize(row.size) }}</template>
+            </el-table-column>
+            <el-table-column label="创建时间" width="180">
+              <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="100">
+              <template #default="{ row }">
+                <el-button text type="danger" size="small" @click="openRestore(row)">恢复</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -209,7 +323,7 @@
         <div class="dev-toolbar">
           <div>
             <b>任务失败与未匹配通知</b>
-            <div class="tiny muted">同步失败、存在未匹配记录、回填完成时推送到指定 URL；支持 HMAC 签名与失败重试。</div>
+            <div class="tiny muted">同步失败、存在未匹配记录、写入飞牛完成时推送到指定 URL；支持飞书 / 钉钉 / 企业微信机器人格式与失败重试。</div>
           </div>
           <el-button type="primary" :icon="Plus" @click="openWebhookCreate">新建 Webhook</el-button>
         </div>
@@ -219,8 +333,13 @@
             <el-table-column label="名称" min-width="150">
               <template #default="{ row }"><b>{{ row.name }}</b></template>
             </el-table-column>
-            <el-table-column label="URL" min-width="260">
+            <el-table-column label="URL" min-width="240">
               <template #default="{ row }"><span class="mono tiny">{{ row.url }}</span></template>
+            </el-table-column>
+            <el-table-column label="类型" width="120">
+              <template #default="{ row }">
+                <span class="chip muted">{{ formatLabel(row.format) }}</span>
+              </template>
             </el-table-column>
             <el-table-column label="事件" min-width="220">
               <template #default="{ row }">
@@ -295,17 +414,53 @@
       </el-tab-pane>
     </el-tabs>
 
-    <!-- apply backfill -->
-    <el-dialog append-to-body v-model="applyVisible" title="确认回填本地观看记录" width="520px">
-      <el-alert type="warning" :closable="false" show-icon title="此操作会修改数据库" />
-      <p class="tiny" style="line-height: 1.8; margin: 14px 0">
-        将更新 <b>{{ preview.summary?.update || 0 }}</b> 条、新建 <b>{{ preview.summary?.create || 0 }}</b> 条本地记录：把进度改为 100%、标记为已看完，并写入 Trakt 观看时间。
-        执行前会自动备份到 <code>{{ summary.backup_dir || 'data/backups' }}</code>。
-      </p>
-      <el-checkbox v-model="applyAck">我已了解并同意修改/新增本地观看记录</el-checkbox>
+    <!-- writeback apply: two-step confirmation -->
+    <el-dialog append-to-body v-model="wbApplyVisible" :title="wbStep === 1 ? '写入飞牛 · 第 1 步（核对范围）' : '写入飞牛 · 第 2 步（最终确认）'" width="580px">
+      <template v-if="wbStep === 1">
+        <el-alert type="warning" :closable="false" show-icon title="此操作会直接修改飞牛数据库" />
+        <p class="tiny" style="line-height: 1.9; margin: 14px 0">
+          本次将写入 <b>{{ wb.summary?.total || 0 }}</b> 条记录（更新
+          <b>{{ wb.summary?.update || 0 }}</b> 条、新建 <b>{{ wb.summary?.create || 0 }}</b> 条），
+          目标飞牛用户：<b>{{ wb.target_user?.username }}</b>。<br />
+          另有 <b>{{ wb.summary?.skipped || 0 }}</b> 条无法匹配到飞牛媒体库，将被跳过，不会写入。<br />
+          写入前会自动备份到 <code>{{ wb.backup_dir || 'data/backups' }}</code>。
+        </p>
+        <el-checkbox v-model="wbAck">我已核对写入范围与跳过数量</el-checkbox>
+      </template>
+      <template v-else>
+        <el-alert type="error" :closable="false" show-icon title="最后确认：写入后飞牛将显示这些条目为已看" />
+        <p class="tiny" style="line-height: 1.9; margin: 14px 0">
+          即将向飞牛数据库写入 <b>{{ wb.summary?.total || 0 }}</b> 条播放记录，
+          并跳过 <b>{{ wb.summary?.skipped || 0 }}</b> 条未匹配记录。<br />
+          备份目录：<code>{{ wb.backup_dir }}</code>；如结果不符合预期，可在备份列表中恢复。
+        </p>
+        <el-checkbox v-model="wbAck2">我确认执行写入，并了解可以随时从备份恢复</el-checkbox>
+      </template>
       <template #footer>
-        <el-button @click="applyVisible = false">取消</el-button>
-        <el-button type="primary" :disabled="!applyAck" :loading="applying" @click="applyBackfill">开始回填</el-button>
+        <el-button @click="wbApplyVisible = false">取消</el-button>
+        <el-button v-if="wbStep === 1" type="primary" :disabled="!wbAck" @click="wbStep = 2">下一步</el-button>
+        <template v-else>
+          <el-button @click="wbStep = 1">上一步</el-button>
+          <el-button type="danger" :disabled="!wbAck2" :loading="wbApplying" @click="applyWriteback">
+            确认写入
+          </el-button>
+        </template>
+      </template>
+    </el-dialog>
+
+    <!-- restore -->
+    <el-dialog append-to-body v-model="wbRestoreVisible" title="恢复飞牛数据库" width="560px">
+      <el-alert type="error" :closable="false" show-icon title="恢复会覆盖当前飞牛数据库" />
+      <p class="tiny" style="line-height: 1.8; margin: 14px 0">
+        将使用备份 <code>{{ wbRestoreTarget?.name }}</code> 覆盖当前飞牛数据库。
+        恢复前会自动再备份一次当前数据库，作为撤销点。
+      </p>
+      <el-checkbox v-model="wbRestoreAck">我已了解风险，并确认恢复</el-checkbox>
+      <template #footer>
+        <el-button @click="wbRestoreVisible = false">取消</el-button>
+        <el-button type="danger" :disabled="!wbRestoreAck" :loading="wbRestoring" @click="restoreBackup">
+          确认恢复
+        </el-button>
       </template>
     </el-dialog>
 
@@ -330,11 +485,17 @@
       </template>
     </el-dialog>
 
-    <el-dialog append-to-body v-model="tokenResultVisible" title="Token 已创建" width="560px">
+    <el-dialog append-to-body v-model="tokenResultVisible" title="Token 已创建" width="560px" @opened="selectToken">
       <el-alert type="warning" :closable="false" show-icon title="只显示这一次，请现在复制保存" />
       <div class="token-result">
-        <code>{{ newToken }}</code>
-        <el-button :icon="CopyDocument" @click="copyToken">复制</el-button>
+        <el-input
+          ref="tokenInputRef"
+          :model-value="newToken"
+          readonly
+          class="token-input"
+          @focus="selectToken"
+        />
+        <el-button type="primary" :icon="CopyDocument" @click="copyToken">复制</el-button>
       </div>
       <p class="tiny muted">之后列表只显示前缀，无法再次查看完整 Token。</p>
       <template #footer>
@@ -350,6 +511,15 @@
         </el-form-item>
         <el-form-item label="URL">
           <el-input v-model="webhookForm.url" placeholder="https://example.com/fn2trakt" spellcheck="false" />
+        </el-form-item>
+        <el-form-item label="类型">
+          <el-select v-model="webhookForm.format" placeholder="按 URL 自动识别" style="width: 100%">
+            <el-option label="按 URL 自动识别" value="" />
+            <el-option v-for="fmt in webhookFormats" :key="fmt.key" :label="fmt.label" :value="fmt.key" />
+          </el-select>
+          <div class="tiny muted" style="margin-top: 6px">
+            飞书 / 钉钉 / 企业微信机器人会自动使用对应消息格式与签名算法；自定义服务选「通用 JSON」。
+          </div>
         </el-form-item>
         <el-form-item label="事件">
           <el-checkbox-group v-model="webhookForm.events">
@@ -380,48 +550,72 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  CircleCheckFilled,
+  CircleCheck,
   Connection,
   CopyDocument,
   Document,
   Download,
+  FolderOpened,
   Key,
-  List,
   Plus,
   Refresh,
   Upload,
-  View
+  View,
+  WarningFilled
 } from '@element-plus/icons-vue'
 import api, { errMsg } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/format'
+import { copyText } from '@/utils/clipboard'
 
 const auth = useAuthStore()
 const isAdmin = computed(() => auth.isAdmin)
-const tab = ref(isAdmin.value ? 'backfill' : 'api')
+const tab = ref(isAdmin.value ? 'writeback' : 'api')
 const loading = ref(false)
 
 const accounts = ref([])
 const accountId = ref(null)
-const summary = ref({})
-const preview = ref({ summary: {}, items: [] })
-const pulling = ref(false)
-const previewing = ref(false)
-const applying = ref(false)
-const applyVisible = ref(false)
-const applyAck = ref(false)
-const applyResult = ref(null)
+
+const wb = ref({
+  summary: {},
+  items: [],
+  target_user: null,
+  writable: false,
+  error: null,
+  can_apply: false,
+  backup_dir: '',
+  last_writeback_at: null,
+  last_pull_at: null,
+  skipped_items: [],
+  written_items: []
+})
+const wbBackups = ref([])
+const wbLoading = ref(false)
+const wbPulling = ref(false)
+const wbApplying = ref(false)
+const wbApplyVisible = ref(false)
+const wbIncludeWritten = ref(false)
+const wbStep = ref(1)
+const wbAck = ref(false)
+const wbAck2 = ref(false)
+const wbResult = ref(null)
+const wbRestoreVisible = ref(false)
+const wbRestoreTarget = ref(null)
+const wbRestoreAck = ref(false)
+const wbRestoring = ref(false)
 
 const tokens = ref([])
 const tokenScopes = ref([])
 const tokenVisible = ref(false)
 const tokenResultVisible = ref(false)
+const tokenInputRef = ref(null)
 const creatingToken = ref(false)
 const newToken = ref('')
 const tokenForm = reactive({ name: '', scopes: ['history:read', 'library:read'] })
 
 const webhooks = ref([])
 const webhookEvents = ref([])
+const webhookFormats = ref([])
 const deliveries = ref([])
 const webhookVisible = ref(false)
 const savingWebhook = ref(false)
@@ -432,6 +626,7 @@ const webhookForm = reactive({
   events: ['sync.failed', 'sync.unmatched'],
   secret: '',
   clear_secret: false,
+  format: '',
   enabled: true
 })
 
@@ -450,6 +645,10 @@ const endpoints = [
 
 function eventLabel(key) {
   return webhookEvents.value.find((item) => item.key === key)?.label || key
+}
+
+function formatLabel(key) {
+  return webhookFormats.value.find((item) => item.key === key)?.label || key || '通用 JSON'
 }
 
 async function loadAll() {
@@ -471,66 +670,118 @@ async function loadAccounts() {
     const own = accounts.value.find((item) => item.app_user_id === auth.user?.id)
     accountId.value = (own || accounts.value[0]).id
   }
-  if (accountId.value) await loadBackfill()
+  if (accountId.value) await loadWriteback()
 }
 
-async function loadBackfill() {
+async function pullAndPreview() {
   if (!accountId.value) return
-  const [sum, prev] = await Promise.all([
-    api.get('/trakt/history/summary', { params: { account_id: accountId.value } }),
-    api.get('/trakt/history/preview', { params: { account_id: accountId.value } })
-  ])
-  summary.value = sum
-  preview.value = prev
-}
-
-async function pullHistory() {
-  pulling.value = true
+  wbPulling.value = true
   try {
-    const result = await api.post('/trakt/history/pull', { account_id: accountId.value })
-    ElMessage.success(`已拉取 ${result.fetched} 条 Trakt 历史`)
-    await loadBackfill()
-  } catch (error) {
-    ElMessage.error(errMsg(error))
-  } finally {
-    pulling.value = false
-  }
-}
-
-async function loadPreview() {
-  previewing.value = true
-  try {
-    const data = await api.get('/trakt/history/preview', { params: { account_id: accountId.value } })
-    preview.value = data
-    ElMessage.success(`将更新 ${data.summary?.update || 0} 条、新建 ${data.summary?.create || 0} 条记录`)
-  } catch (error) {
-    ElMessage.error(errMsg(error))
-  } finally {
-    previewing.value = false
-  }
-}
-
-function openApply() {
-  applyAck.value = false
-  applyVisible.value = true
-}
-
-async function applyBackfill() {
-  applying.value = true
-  try {
-    const result = await api.post('/trakt/history/apply', {
+    const data = await api.post('/fntv/writeback/preview', {
       account_id: accountId.value,
+      pull: true
+    })
+    wb.value = data
+    const pulled = data.pulled
+    ElMessage.success(
+      pulled
+        ? `已拉取 ${pulled.fetched} 条 Trakt 历史，匹配成功 ${data.summary?.total || 0} 条`
+        : `匹配成功 ${data.summary?.total || 0} 条`
+    )
+    await loadWbBackups()
+  } catch (error) {
+    wb.value = { ...wb.value, error: errMsg(error), can_apply: false, items: [] }
+    ElMessage.error(errMsg(error))
+  } finally {
+    wbPulling.value = false
+  }
+}
+
+function onTabChange(name) {
+  if (name === 'writeback') loadWriteback()
+}
+
+async function loadWbBackups() {
+  try {
+    const data = await api.get('/fntv/backups')
+    wbBackups.value = data.items || []
+  } catch {
+    wbBackups.value = []
+  }
+}
+
+async function loadWriteback() {
+  if (!isAdmin.value || !accountId.value) return
+  wbLoading.value = true
+  try {
+    const data = await api.get('/fntv/writeback/preview', {
+      params: { account_id: accountId.value, include_written: wbIncludeWritten.value }
+    })
+    wb.value = data
+    await loadWbBackups()
+  } catch (error) {
+    wb.value = { ...wb.value, error: errMsg(error), can_apply: false, items: [] }
+    ElMessage.error(errMsg(error))
+  } finally {
+    wbLoading.value = false
+  }
+}
+
+function openWbApply() {
+  wbStep.value = 1
+  wbAck.value = false
+  wbAck2.value = false
+  wbApplyVisible.value = true
+}
+
+async function applyWriteback() {
+  wbApplying.value = true
+  try {
+    const result = await api.post('/fntv/writeback/apply', {
+      account_id: accountId.value,
+      confirm: true,
+      expected_total: wb.value.summary?.total ?? null,
+      include_written: wbIncludeWritten.value
+    })
+    wbResult.value = result
+    wbApplyVisible.value = false
+    ElMessage.success(result.message)
+    await loadWriteback()
+  } catch (error) {
+    ElMessage.error(errMsg(error))
+  } finally {
+    wbApplying.value = false
+  }
+}
+
+function openRestore(row) {
+  wbRestoreTarget.value = row
+  wbRestoreAck.value = false
+  wbRestoreVisible.value = true
+}
+
+async function restoreBackup() {
+  wbRestoring.value = true
+  try {
+    const result = await api.post('/fntv/restore', {
+      backup: wbRestoreTarget.value?.name,
       confirm: true
     })
-    applyResult.value = result
-    applyVisible.value = false
+    wbRestoreVisible.value = false
     ElMessage.success(result.message)
-    await loadBackfill()
+    await loadWriteback()
   } catch (error) {
     ElMessage.error(errMsg(error))
   } finally {
-    applying.value = false
+    wbRestoring.value = false
   }
+}
+
+function formatSize(value) {
+  const bytes = Number(value || 0)
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 async function loadTokens() {
@@ -570,12 +821,20 @@ async function createToken() {
 }
 
 async function copyToken() {
-  try {
-    await navigator.clipboard.writeText(newToken.value)
+  if (await copyText(newToken.value)) {
     ElMessage.success('已复制')
-  } catch {
-    ElMessage.warning('复制失败，请手动选择')
+    return
   }
+  // Neither clipboard API nor execCommand worked (common on plain HTTP):
+  // select the token so the user only has to press Ctrl/⌘ + C.
+  selectToken()
+  ElMessage.warning('浏览器不允许自动复制，Token 已选中，请按 Ctrl/⌘ + C 手动复制')
+}
+
+function selectToken() {
+  const input = tokenInputRef.value
+  if (!input) return
+  input.select?.()
 }
 
 async function revokeToken(row) {
@@ -595,6 +854,7 @@ async function loadWebhooks() {
   const data = await api.get('/webhooks')
   webhooks.value = data.items || []
   webhookEvents.value = data.events || []
+  webhookFormats.value = data.formats || []
   await loadDeliveries()
 }
 
@@ -611,6 +871,7 @@ function openWebhookCreate() {
     events: ['sync.failed', 'sync.unmatched'],
     secret: '',
     clear_secret: false,
+    format: '',
     enabled: true
   })
   webhookVisible.value = true
@@ -624,6 +885,7 @@ function openWebhookEdit(row) {
     events: [...(row.events || [])],
     secret: '',
     clear_secret: false,
+    format: row.format || '',
     enabled: row.enabled
   })
   webhookVisible.value = true
@@ -644,6 +906,7 @@ async function saveWebhook() {
       name: webhookForm.name.trim(),
       url: webhookForm.url.trim(),
       events: webhookForm.events,
+      format: webhookForm.format || null,
       enabled: webhookForm.enabled
     }
     if (webhookForm.secret.trim()) payload.secret = webhookForm.secret.trim()
@@ -708,14 +971,6 @@ onMounted(loadAll)
   margin-bottom: 20px;
 }
 .toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.backfill-alert {
-  margin-bottom: 20px;
-  background: var(--glass-soft) !important;
-  border: 1px solid var(--glass-border) !important;
-}
-.backfill-alert :deep(.el-alert__title) { color: var(--ink-strong); }
-.backfill-alert :deep(.el-alert__description) { color: var(--muted); }
-.backfill-alert :deep(.el-alert__icon) { color: var(--danger); }
 .alert-line { line-height: 1.8; }
 .alert-line code, .apply-result code, .token-result code { font-family: "SFMono-Regular", ui-monospace, monospace; }
 
@@ -740,6 +995,17 @@ onMounted(loadAll)
 .mini-stat small { font-size: 11px; color: var(--muted); }
 .mini-stat.accent { border-color: color-mix(in srgb, var(--primary) 24%, var(--glass-border)); }
 .mini-stat.accent b { color: var(--primary-deep); }
+/* The fifth card is a single fact, so it spans the grid as a slim bar instead
+   of leaving three empty cells on its own row. */
+.mini-stat.mini-wide {
+  grid-column: 1 / -1;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 18px;
+}
+.mini-stat.mini-wide .mini-user { font-size: 16px !important; }
+.mini-stat.mini-wide .chip { margin-left: auto; }
 
 .apply-result {
   display: flex;
@@ -797,14 +1063,24 @@ onMounted(loadAll)
 .method.post { color: var(--warning-ink); background: var(--warning-soft); }
 
 .token-result { display: flex; gap: 10px; align-items: center; margin: 14px 0 8px; }
-.token-result code {
-  flex: 1;
-  padding: 11px 13px;
-  border-radius: 10px;
-  background: var(--glass-soft);
-  border: 1px solid var(--glass-border);
-  word-break: break-all;
-  font-size: 12px;
+.token-result .token-input { flex: 1; }
+.token-result :deep(.el-input__inner) { font-family: var(--mono, ui-monospace, monospace); font-size: 12px; }
+
+.writeback-alert {
+  margin-bottom: 20px;
+  background: var(--danger-soft) !important;
+  border: 1px solid color-mix(in srgb, var(--danger) 22%, transparent) !important;
+}
+.writeback-alert :deep(.el-alert__title) { color: var(--danger-ink); }
+.writeback-alert :deep(.el-alert__description) { color: var(--muted); }
+.writeback-alert :deep(.el-alert__icon) { color: var(--danger); }
+.mini-user { font-size: 17px !important; letter-spacing: 0 !important; }
+.mini-time { font-size: 14px !important; letter-spacing: 0 !important; }
+.mini-path { font-size: 11px !important; letter-spacing: 0 !important; word-break: break-all; line-height: 1.4; }
+.danger-result {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 22%, transparent);
+  color: var(--danger-ink);
 }
 
 .media-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }

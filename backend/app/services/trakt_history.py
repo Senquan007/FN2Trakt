@@ -1,17 +1,14 @@
 """Local mirror of the Trakt watched history.
 
-The sync feature copies fnTV -> Trakt.  This module is the other direction:
-it pulls the complete Trakt history into ``trakt_history`` and optionally
-backfills matching local ``play_record`` rows.  Pulling history never touches
-play records; applying a backfill always creates a database backup first.
+The sync feature copies fnTV -> Trakt.  This module is the other direction: it
+pulls the complete Trakt history into ``trakt_history`` and links the rows that
+match the fnTV library, which is what the "写入飞牛" write-back needs.  Pulling
+history never touches play records.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import sqlite3
-import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,7 +24,6 @@ from app.db.models import (
     MediaItem,
     PlayRecord,
     Setting,
-    SyncRecord,
     TraktAccount,
     TraktHistory,
 )
@@ -40,7 +36,6 @@ from app.utils.time import to_iso_z, utcnow
 
 logger = logging.getLogger(__name__)
 
-BACKFILL_LOCK = threading.Lock()
 MAX_PAGES = 100
 PAGE_SIZE = 100
 
@@ -383,261 +378,6 @@ def match_history(db: Session, account: TraktAccount) -> dict[str, int]:
     return counts
 
 
-def _plan_rows(db: Session, account: TraktAccount) -> list[dict[str, Any]]:
-    user = _account_user(db, account)
-    can_create = bool(user and user.fn_user_guid)
-    plays = _local_play_map(db, account)
-    sync_map: dict[int, SyncRecord] = {}
-    if plays:
-        sync_map = {
-            row.play_id: row
-            for row in db.scalars(
-                select(SyncRecord).where(
-                    SyncRecord.trakt_account_id == account.id,
-                    SyncRecord.play_id.in_([p.id for p in plays.values()]),
-                )
-            ).all()
-        }
-    histories = db.scalars(
-        select(TraktHistory)
-        .where(TraktHistory.trakt_account_id == account.id)
-        .order_by(TraktHistory.watched_at.desc())
-    ).all()
-    plan: list[dict[str, Any]] = []
-    for history in histories:
-        play = plays.get(history.media_guid) if history.media_guid else None
-        if history.match_status != "matched" or play is None:
-            if history.match_status == "library_only" and can_create:
-                state = "create"
-            elif history.match_status == "library_only":
-                state = "library_only"
-            else:
-                state = "not_in_library"
-        else:
-            sync = sync_map.get(play.id)
-            already = bool(
-                play.completed
-                and play.watched
-                and (play.progress_percent or 0) >= 100
-                and sync is not None
-                and sync.status == "success"
-            )
-            state = "already" if already else "update"
-        plan.append(
-            {
-                "history_id": history.id,
-                "trakt_history_id": history.trakt_history_id,
-                "type": history.history_type,
-                "title": history.title,
-                "show_title": history.show_title,
-                "season": history.season_number,
-                "episode": history.episode_number,
-                "watched_at": to_iso_z(history.watched_at),
-                "match_status": history.match_status,
-                "state": state,
-                "media_guid": history.media_guid,
-                "play_id": play.id if play else None,
-                "current_progress": round(play.progress_percent or 0, 1) if play else None,
-                "current_completed": bool(play.completed) if play else False,
-                "runtime_minutes": history.runtime_minutes,
-            }
-        )
-    return plan
-
-
-def preview_backfill(db: Session, account: TraktAccount) -> dict[str, Any]:
-    match_history(db, account)
-    plan = _plan_rows(db, account)
-    summary = {
-        "total": len(plan),
-        "update": sum(1 for row in plan if row["state"] == "update"),
-        "create": sum(1 for row in plan if row["state"] == "create"),
-        "already": sum(1 for row in plan if row["state"] == "already"),
-        "library_only": sum(1 for row in plan if row["state"] == "library_only"),
-        "not_in_library": sum(1 for row in plan if row["state"] == "not_in_library"),
-    }
-    return {
-        "summary": summary,
-        "items": [row for row in plan if row["state"] in {"update", "create"}][:20],
-        "all_items": plan[:20],
-        "backup_dir": str(settings.data_dir / "backups"),
-        "last_pull_at": (db.get(Setting, "trakt.history.last_pull_at").value
-        if db.get(Setting, "trakt.history.last_pull_at")
-        else None),
-        "can_apply": summary["update"] + summary["create"] > 0,
-    }
-
-
-def database_backup() -> Path:
-    """Consistent SQLite backup before a destructive backfill."""
-    source_path = settings.data_dir / "fn2trakt.db"
-    if not source_path.exists():
-        raise TraktError("本地数据库不存在，无法备份")
-    backup_dir = settings.data_dir / "backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = utcnow().strftime("%Y%m%d-%H%M%S")
-    destination = backup_dir / f"fn2trakt-{stamp}-before-backfill.db"
-    suffix = 1
-    while destination.exists():
-        destination = backup_dir / f"fn2trakt-{stamp}-before-backfill-{suffix}.db"
-        suffix += 1
-    source = sqlite3.connect(source_path)
-    target = sqlite3.connect(destination)
-    try:
-        source.backup(target)
-    finally:
-        target.close()
-        source.close()
-    return destination
-
-
-def apply_backfill(db: Session, account: TraktAccount) -> dict[str, Any]:
-    if not BACKFILL_LOCK.acquire(blocking=False):
-        raise TraktError("已有回填任务正在执行，请稍后再试")
-    try:
-        plan = _plan_rows(db, account)
-        targets = [row for row in plan if row["state"] in {"update", "create"}]
-        if not targets:
-            return {
-                "updated": 0,
-                "created": 0,
-                "skipped": len(plan),
-                "backup_path": None,
-                "message": "没有需要回填的记录",
-            }
-
-        user = _account_user(db, account)
-        if user is None or not user.fn_user_guid:
-            raise TraktError("当前 Trakt 账号没有绑定飞牛用户，无法写入本地播放记录")
-
-        backup = database_backup()
-        index = build_library_index(db)
-        updated = created = 0
-        for item in targets:
-            history = db.get(TraktHistory, item["history_id"])
-            if history is None:
-                continue
-            watched_at = history.watched_at or utcnow()
-            play: PlayRecord | None = None
-            if item["state"] == "update":
-                play = db.get(PlayRecord, item["play_id"]) if item["play_id"] else None
-            else:
-                entry = index.by_guid.get(history.media_guid or "")
-                if entry is None:
-                    continue
-                media = db.get(MediaItem, entry.guid)
-                if media is None:
-                    media = MediaItem(
-                        fn_guid=entry.guid,
-                        fn_type=entry.fn_type,
-                        title=entry.title,
-                    )
-                    db.add(media)
-                media.fn_type = entry.fn_type
-                media.title = entry.title
-                media.original_title = entry.show_title if entry.fn_type == "Episode" else entry.title
-                media.show_guid = entry.show_guid
-                media.show_title = entry.show_title
-                media.season_number = entry.season_number
-                media.episode_number = entry.episode_number
-                media.year = entry.year
-                media.tmdb_id = entry.tmdb_id
-                media.imdb_id = entry.imdb_id
-                media.episode_imdb_id = entry.episode_imdb_id
-                media.runtime_minutes = entry.runtime_minutes
-                db.flush()
-                play = db.scalar(
-                    select(PlayRecord).where(
-                        PlayRecord.fn_item_guid == entry.guid,
-                        PlayRecord.fn_user_guid == user.fn_user_guid,
-                    )
-                )
-                if play is None:
-                    play = PlayRecord(
-                        fn_item_guid=entry.guid,
-                        fn_user_guid=user.fn_user_guid,
-                        play_type="trakt_backfill",
-                    )
-                    db.add(play)
-                    db.flush()
-                    created += 1
-            if play is None:
-                continue
-            history.play_id = play.id
-            history.match_status = "matched"
-            runtime_seconds = (history.runtime_minutes or 0) * 60 or play.runtime_seconds
-            play.watched = True
-            play.completed = True
-            play.progress_percent = 100.0
-            if runtime_seconds:
-                play.runtime_seconds = runtime_seconds
-                play.position_seconds = runtime_seconds
-            play.fn_update_time = watched_at
-            if play.fn_create_time is None:
-                play.fn_create_time = watched_at
-            raw = dict(play.raw_json or {})
-            raw["trakt_backfill"] = {
-                "history_id": history.trakt_history_id,
-                "watched_at": to_iso_z(watched_at),
-                "backup": str(backup),
-            }
-            play.raw_json = raw
-
-            record = db.scalar(
-                select(SyncRecord).where(
-                    SyncRecord.play_id == play.id,
-                    SyncRecord.trakt_account_id == account.id,
-                )
-            )
-            if record is None:
-                record = SyncRecord(play_id=play.id, trakt_account_id=account.id)
-                db.add(record)
-            record.status = "success"
-            record.action = "backfill"
-            record.watched_at = watched_at
-            record.trakt_history_id = history.trakt_history_id
-            record.response_json = {"backfilled": True, "history_id": history.trakt_history_id}
-            record.error = None
-            record.updated_at = utcnow()
-            if item["state"] == "update":
-                updated += 1
-
-        db.commit()
-        set_setting(db, "trakt.backfill.last_at", to_iso_z(utcnow()))
-        set_setting(db, "trakt.backfill.last_backup", str(backup))
-        set_setting(db, "trakt.backfill.last_updated", str(updated))
-        set_setting(db, "trakt.backfill.last_created", str(created))
-        db.commit()
-        logger.info("trakt backfill updated=%s created=%s backup=%s", updated, created, backup)
-        try:
-            from app.services.webhooks import emit_event
-
-            emit_event(
-                db,
-                "backfill.completed",
-                {
-                    "updated": updated,
-                    "created": created,
-                    "skipped": len(plan) - updated - created,
-                    "not_in_library": sum(1 for row in plan if row["state"] == "not_in_library"),
-                    "library_only": sum(1 for row in plan if row["state"] == "library_only"),
-                    "backup_path": str(backup),
-                    "trakt_user": account.trakt_username,
-                },
-            )
-        except Exception:
-            logger.exception("failed to emit backfill webhook")
-        return {
-            "updated": updated,
-            "created": created,
-            "skipped": len(plan) - updated - created,
-            "backup_path": str(backup),
-            "message": f"已更新 {updated} 条、新建 {created} 条本地观看记录",
-        }
-    finally:
-        BACKFILL_LOCK.release()
-
-
 def history_summary(db: Session, account: TraktAccount) -> dict[str, Any]:
     rows = db.scalars(
         select(TraktHistory).where(TraktHistory.trakt_account_id == account.id)
@@ -646,18 +386,14 @@ def history_summary(db: Session, account: TraktAccount) -> dict[str, Any]:
     for row in rows:
         counts[row.match_status] = counts.get(row.match_status, 0) + 1
     last_pull = db.get(Setting, "trakt.history.last_pull_at")
-    last_backfill = db.get(Setting, "trakt.backfill.last_at")
-    last_backup = db.get(Setting, "trakt.backfill.last_backup")
-    last_updated = db.get(Setting, "trakt.backfill.last_updated")
+    last_writeback = db.get(Setting, "fntv.writeback.last_at")
     return {
         "total": len(rows),
         "matched": counts.get("matched", 0),
         "library_only": counts.get("library_only", 0),
         "not_in_library": counts.get("not_in_library", 0),
         "last_pull_at": last_pull.value if last_pull else None,
-        "last_backfill_at": last_backfill.value if last_backfill else None,
-        "last_backup": last_backup.value if last_backup else None,
-        "last_updated": int(last_updated.value) if last_updated and last_updated.value.isdigit() else 0,
+        "last_writeback_at": last_writeback.value if last_writeback else None,
         "backup_dir": str(settings.data_dir / "backups"),
     }
 

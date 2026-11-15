@@ -87,7 +87,9 @@ def build_plan(db: Session, app_user: AppUser, account: TraktAccount | None) -> 
         if media.fn_type not in {"Movie", "Episode"}:
             entries.append(PlanEntry(play, media, None, sync, "unsupported", "无法识别的媒体类型"))
             continue
-        target_guid = media.show_guid if media.fn_type == "Episode" else media.fn_guid
+        # Episodes whose show could not be resolved fall back to their own
+        # guid, which is the key collect_targets() uses for them.
+        target_guid = (media.show_guid or media.fn_guid) if media.fn_type == "Episode" else media.fn_guid
         match = db.scalar(select(MediaMatch).where(MediaMatch.media_guid == target_guid)) if target_guid else None
         if match is None or match.status in {"unmatched", "rejected"} or not _pick_ids(match.ids_json):
             state = "blocked"

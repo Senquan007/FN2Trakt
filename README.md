@@ -1,444 +1,251 @@
-<p align="center">
-  <img src="logo/main_logo.png" width="140" alt="FN2Trakt logo" />
-</p>
+# FN2Trakt
 
-<h1 align="center">FN2Trakt</h1>
+把 **飞牛影视（fnOS / trimmedia）** 的观看记录自动同步到 **Trakt**。
 
-<p align="center">
-  把 <b>飞牛影视（fnOS / trimmedia）</b> 的观看记录，自动同步到 <b>Trakt</b>。
-</p>
+读取飞牛本地 SQLite 数据库（常规只读；v4 可显式写入飞牛），按 TMDB / IMDB ID 匹配 Trakt 条目，通过官方 **OAuth Device Code** 授权，把已看完的电影 / 剧集写入 Trakt 观看历史。自带中文管理后台、多用户绑定、进度展示、失败重试与定时增量同步。
 
-<p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-3.0.0-2563eb" />
-  <img alt="python" src="https://img.shields.io/badge/Python-3.11%2B-3776ab" />
-  <img alt="vue" src="https://img.shields.io/badge/Vue-3-42b883" />
-  <img alt="docker" src="https://img.shields.io/badge/Docker-amd64%20%7C%20arm64-2496ed" />
-  <img alt="trakt" src="https://img.shields.io/badge/Trakt-OAuth%20Device%20Code-ed1c24" />
-</p>
+> 当前版本：`v4.1.4` · 更新记录见 [CHANGELOG.md](CHANGELOG.md)
 
-> 非官方项目，与 Trakt、飞牛影视均无隶属关系。Trakt 是 Trakt, Inc. 的商标。
+![仪表盘](docs/images/dashboard.png)
 
----
+## ✨ 功能
 
-## 项目介绍
+- **读取飞牛观影数据**：只读打开 `trimmedia.db`，自动构建 `Episode → Season → TV` 层级，识别电影 / 剧集。
+- **Trakt 设备码绑定**：点击生成 8 位授权码 → 打开 `auth.trakt.tv/activate` → 输入并批准，自动轮询完成绑定。和 Emby Trakt 插件的体验一致。
+- **多用户与角色**：管理员分配飞牛用户、维护 Trakt 应用凭据；普通用户只需完成自己的 Trakt 设备授权。
+- **命名式应用凭据**：系统设置中可保存多套 Trakt 应用（名称 + Client ID + 可选 Secret），Client ID / Secret 保存后不在前端回显。
+- **顺滑的授权体验**：验证码渲染完成后自动复制，顶部居中提示 5 秒倒计时，随后在**新标签页**打开 Trakt；原页面保持不动继续轮询。
+- **亮色 / 暗黑双主题**：中性灰画布 + 纯白卡片 + 蓝色选中标记，按钮带液态玻璃质感，主题选择自动记忆。
+- **历史批量 + 定时增量**：首次补齐历史；之后默认每 5 分钟自动读取飞牛数据库并上传新完成的记录（间隔可改），无需手动点「重新读取」。
+- **智能匹配**：`tmdb_id` / `imdb_id` 优先；缺失时按标题搜索；仍失败可在「媒体匹配」中手动指定。
+- **已看完判定**：飞牛 `watched=1` 或播放进度 ≥ 阈值（默认 80%，可调）。
+- **可视化后台**：仪表盘趋势图、同步状态分布、电影 / 剧集数量、观看进度、匹配状态、上传记录、失败原因、单条重试；「观看记录」直接显示匹配到的影视名（未匹配显示 `-`）。
+- **一键刷新并同步**：「观看记录」左上角的「刷新并同步」点击一次即完成读库 → 上传 → 刷新列表，不用再分别点刷新和同步。
+- **本地 SQLite**：不依赖任何外部数据库；常规同步对飞牛数据库只读，v4 的「写入飞牛」是唯一例外。
+- **Token 自动刷新**：Trakt access token 到期前自动用 refresh token 续期。
+- **个人 API（v3）**：`/api/v1` 提供历史、统计、导出、媒体库、同步状态等只读接口；使用可分权限、可撤销的个人 Bearer Token。
+- **Webhook 通知**：同步失败、出现未匹配媒体、写入飞牛完成时推送（时间统一为北京时间，`sent_at` 带 `+08:00`）；内置飞书 / 钉钉 / 企业微信机器人格式与签名，也支持自定义 JSON + HMAC-SHA256 签名、投递记录、失败重试和测试按钮。
+- **Trakt → 飞牛数据库写入**：管理员可把 Trakt 历史写回飞牛 `item_user_play`，让飞牛 App 显示已看；只写匹配成功的条目，未匹配会列出并跳过，写入前自动备份、两步确认；已写过的记录自动跳过，写入进度可在「开发者 → 写入飞牛」查看。
 
-FN2Trakt 是一个自托管的观影记录同步工具。
-
-它只读打开飞牛影视的 SQLite 数据库，按 TMDB / IMDB ID 匹配 Trakt 条目，把已经看完的电影和剧集写入 Trakt 观看历史。自带中文管理后台，支持多用户、设备码授权、手动匹配、失败重试、Trakt 历史回填、个人 API 和 Webhook。
-
-
-### 功能特性
-
-飞牛影视本身很好用，但观看记录只留在本地。Trakt 能跨设备记录观影历史，却不知道你在飞牛看了什么。
-
-FN2Trakt 做的事情就是：
-
-- 读取飞牛本地的观看进度
-- 判断“是否看完”
-- 找到对应的 Trakt 电影 / 剧集
-- 写入 Trakt 观看历史
-- 在本地保留一份可查询的记录和同步状态
-
-
----
-
-## 功能
-
-| 功能 | 说明 |
+| 观看记录 | Trakt 绑定 |
 | --- | --- |
-| 🎬 飞牛观看记录 | 只读读取 `trimmedia.db`，自动解析电影 / 剧集 / 季 / 集 |
-| 🔐 Trakt 设备码授权 | 生成 8 位授权码，在 `auth.trakt.tv/activate` 输入即可，无需回调地址 |
-| 👥 多用户 | 管理员维护飞牛用户与 Trakt 绑定，普通用户各自授权 |
-| 🧩 智能匹配 | 优先 TMDB / IMDB ID；缺失时按标题搜索；支持手动指定 |
-| ✅ 看完判定 | `watched=1` 或播放进度达到阈值（默认 80%） |
-| 🔁 定时增量同步 | 默认每 5 分钟扫描新完成的记录 |
-| 🛠 手动同步 | 单条重试、批量预览、失败记录排查 |
-| 📜 同步记录 | 每次上传的动作、时间、状态、错误原因 |
-| 🌗 亮色 / 暗黑主题 | 中性灰背景、白色卡片、蓝色强调色 |
-| 🔄 Trakt → 本地回填 | 拉取完整 Trakt 历史，更新已有记录，在库但无记录时补建 |
-| 🔑 个人 API | 可分权限、可撤销的 Bearer Token，开放历史 / 统计 / 导出 / 媒体库接口 |
-| 🪝 Webhook | 同步失败、未匹配、同步完成、回填完成；支持 HMAC-SHA256 签名 |
-| 🐳 Docker | 多阶段构建，多架构镜像，数据与飞牛库全部通过 volume 挂载 |
+| ![观看记录](docs/images/history.png) | ![Trakt 绑定](docs/images/trakt-device.png) |
 
----
+| 个人 API | Webhook |
+| --- | --- |
+| ![API](docs/images/developer-api.png) | ![Webhook](docs/images/developer-webhook.png) |
 
-## 工作方式
+## 🚀 快速开始
 
-```mermaid
-flowchart LR
-    A[("飞牛 trimmedia.db<br/>只读")] --> B[读取与归一化]
-    B --> C{匹配 Trakt}
-    C -->|TMDB / IMDB| D[Trakt 条目]
-    C -->|标题搜索| D
-    C -->|失败| E[媒体匹配<br/>手动指定]
-    D --> F[写入观看历史]
-    F --> G[(fn2trakt.db)]
-    G --> H[Web 管理后台]
-    G --> I[个人 API /api/v1]
-    G --> J[Webhook 通知]
-```
-
-核心数据只有两个：
-
-- **飞牛数据库**：只读，不写入
-- **FN2Trakt 数据库**：保存用户、Trakt 绑定、同步记录、API Token、Webhook、Trakt 历史镜像
-
----
-
-## 快速开始
-
-推荐使用 Docker Compose。
-
-### 方式一：Docker Compose 拉取预构建镜像（推荐）
-
-镜像已经发布为多架构：
-
-```text
-spikeding/fn2trakt:3.0.0
-├── linux/amd64
-└── linux/arm64
-```
-
-新建目录：
-
-```bash
-mkdir -p fn2trakt
-cd fn2trakt
-```
-
-把仓库里的 `docker-compose.yml` 和 `.env.docker.example` 放进来，然后：
-
-```bash
-cp .env.docker.example .env
-```
-
-编辑 `.env`，至少修改：
-
-```dotenv
-FN2TRAKT_IMAGE=spikeding/fn2trakt:3.0.0
-
-# 宿主机端口
-FN2TRAKT_HOST_PORT=8080
-
-# 应用数据目录：fn2trakt.db、.secret_key、backups/
-DATA_DIR=/your/path/fn2trakt/data
-
-# 飞牛数据库所在目录（目录，不是单文件）默认目录
-FNTV_DB_DIR=/usr/local/apps/@appdata/trim.media/database 
-FNTV_DB_FILE=trimmedia.db
-
-# NAS 上执行 id -u / id -g
-PUID=1000
-PGID=1000
-```
-
-启动：
-
-```bash
-docker compose pull
-docker compose up -d
-```
-
-查看状态：
-
-```bash
-docker compose ps
-docker compose logs -f
-```
-
-打开：
-
-```text
-http://<你的机器IP>:8080
-```
-
-首次访问会进入初始化向导。
-
-> 如果 Docker Hub 仓库是私有的，先执行 `docker login`。
-
----
-
-### 方式二：自己构建 Docker 镜像
-
-适合修改源码、二次开发，或者不想依赖 Docker Hub。
-
-```bash
-git clone https://github.com/<your-name>/FN2Trakt.git
-cd FN2Trakt
-cp .env.docker.example .env
-# 编辑 .env 里的路径和端口
-```
-
-构建：
-
-```bash
-docker build -t fn2trakt:3.0.0 .
-```
-
-使用源码构建的 Compose：
-
-```bash
-docker compose -f docker-compose.build.yml up -d --build
-```
-
-或者直接 `docker run`：
-
-```bash
-docker run -d \
-  --name fn2trakt \
-  --restart unless-stopped \
-  -p 8080:8080 \
-  -e TZ=Asia/Shanghai \
-  -e PUID=$(id -u) \
-  -e PGID=$(id -g) \
-  -e FN2TRAKT_DATA_DIR=/data \
-  -e FN2TRAKT_FNTV_DB_PATH=/fntv/trimmedia.db \
-  -v /your/path/fn2trakt/data:/data \
-  -v /your/path/trim.media/database:/fntv:ro \
-  fn2trakt:3.0.0
-```
-
-构建双架构并推送（需要 Docker Hub 账号）：
-
-```bash
-docker buildx create --name fn2trakt-builder --driver docker-container --use
-docker buildx inspect --bootstrap
-docker run --privileged --rm tonistiigi/binfmt --install arm64
-
-docker login
-
-docker buildx build \
-  --platform linux/amd64,linux/arm64 \
-  -t <your-dockerhub>/fn2trakt:3.0.0 \
-  -t <your-dockerhub>/fn2trakt:latest \
-  --push .
-```
-
----
-
-### 方式三：源码运行
-
-环境要求：
+### 环境要求
 
 - Python **3.11+**（开发验证于 3.13）
 - Node.js **18+**（只在修改前端时需要）
-- 能访问 `api.trakt.tv` / `auth.trakt.tv`
+- 能访问 `api.trakt.tv` / `auth.trakt.tv`（中国大陆网络可能需要代理）
 
-安装：
+### 1. 安装后端
 
 ```bash
-git clone https://github.com/<your-name>/FN2Trakt.git
-cd FN2Trakt
-
 python3 -m venv backend/.venv
 backend/.venv/bin/pip install -r backend/requirements.txt
 cp .env.example .env
-
-# 把飞牛数据库放到 DB/trimmedia.db，或修改 .env 里的路径
 ```
 
-启动：
+### 2. 启动
 
 ```bash
 cd backend
 .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
-或者：
+打开 <http://localhost:8080>。前端已经构建在 `backend/static`，无需单独启动 Node。
+
+也可以：
 
 ```bash
-make install
-make run
+make install   # 创建 venv + 安装依赖 + 安装前端依赖
+make run       # 启动 8080
 ```
 
-前端已经构建在 `backend/static`，不需要单独启动 Node。
+### 3. 初始化
 
-修改前端后重新构建：
+首次访问会进入初始化向导：
+
+1. 自动检测 `DB/trimmedia.db`（检测失败可在「系统设置」改路径）。
+2. 创建管理员账号。
+3. 选择要绑定的飞牛用户（例如 `yourname`）。
+4. 管理员进入「系统设置 → Trakt 应用凭据」新建一套凭据；普通用户不需要配置。
+
+### 4. 创建 Trakt 应用（新版只需要 Client ID）
+
+Trakt 在 2026 年更新了应用体系：新应用默认使用 **PKCE**，**不再签发 Client Secret**。你看到的 “Client Secret: Not issued” 是正常现象，设备授权只用 Client ID 即可。
+
+1. 打开 <https://app.trakt.tv/settings/apps/api/new>
+2. 按提示连接一个已验证的 GitHub 账号（Trakt 新建应用的硬性要求）
+3. 创建一个 **Development** 应用（个人 / 家庭使用足够，最多 16 人登录）
+4. 复制 **Client ID**
+5. 打开本服务「系统设置 → Trakt 应用凭据」，点击「新建凭据」
+6. 填写凭据名称、Client ID，Client Secret 留空；如果应用表单要求填 **Redirect URI**，填同一个值
+7. 保存后列表只显示名称、是否配置 Secret、Redirect URI 和使用情况，Client ID / Secret 不会再次回显
+8. 多套凭据时，可把其中一套设为「默认」，设备授权会使用默认凭据
+
+> - 设备授权本身不会发生浏览器回调，但 Trakt 在**刷新 Token** 时会校验 `redirect_uri`，所以两边必须一致。
+> - 如果应用表单允许自定义，推荐填 `urn:ietf:wg:oauth:2.0:oob`（本服务默认值）。
+> - 旧版 OAuth 应用仍可填写 Client Secret；新版应用留空即可。
+> - 凭据保存在本地 SQLite；不会发送给除 Trakt 之外的任何服务。
+
+### 5. 绑定 Trakt
+
+1. 点击「生成 Trakt 授权码」
+2. 验证码出现后自动复制，页面顶部居中弹出小提示：**「已自动复制授权码，5s 后在新标签页打开 Trakt」**
+3. 5 秒倒计时结束，在**新标签页**打开 Trakt 授权页；FN2Trakt 原页面保持不动，继续轮询授权结果
+4. 在 <https://auth.trakt.tv/activate> 输入授权码 → Continue → Approve
+5. 回到原页面即可看到自动绑定成功（无需手动刷新）
+
+> 浏览器通常会拦截「定时器到点才 window.open」的弹窗。为保证能自动打开新标签页，验证码就绪后会先创建一个「正在准备 Trakt 授权页」的新标签页，5 秒后把该标签页导航到 Trakt；FN2Trakt 页面始终保留。
+
+### 6. 读取数据并同步
+
+1. 打开「观看记录」，点左上角 **刷新并同步**：一次点击即读取飞牛数据库、上传新完成的记录、刷新列表
+2. 或者等定时任务（默认每 5 分钟自动读库 + 上传，无需手动操作）
+3. 「观看记录」确认已看完 / 匹配状态；未匹配的条目可在「媒体匹配」手动指定
+4. 「同步记录」查看每次结果与失败原因
+
+> 只读场景不需要任何写权限；如果要用「写入飞牛」，需要额外给数据库写权限，见[飞牛数据库权限与 Docker 挂载](docs/fntv-permissions.md)。
+
+## 🐳 Docker Compose
+
+仓库带有 `Dockerfile` 和 `docker-compose.yml`，镜像内部固定监听 8080，宿主机端口、数据目录和飞牛库目录都可以通过 `.env` 调整。
 
 ```bash
-cd frontend
-npm install
-npm run build
+cp .env.docker.example .env
+# 编辑 .env：DATA_DIR / FNTV_DB_DIR / FN2TRAKT_HOST_PORT
+docker compose up -d --build
 ```
 
----
+不想在本机构建时，直接拉取已发布的镜像：
 
-## 首次配置
-
-### 1. 创建管理员
-
-打开首页，按初始化向导：
-
-1. 确认飞牛数据库路径
-2. 创建管理员账号
-3. 绑定一个飞牛用户（之后可以在用户管理中修改）
-
-### 2. 创建 Trakt 应用
-
-打开：
-
-```text
-https://app.trakt.tv/settings/apps/api/new
+```bash
+docker pull spikeding/fn2trakt:4.1.4
 ```
 
-按提示连接一个已验证的 GitHub 账号，创建一个 **Development** 应用。
+`.env` 中设置：
 
-新版 Trakt 应用通常只签发 **Client ID**，没有 Client Secret，这是正常的。设备码授权不需要 Secret。
-
-### 3. 配置 Trakt 凭据
-
-管理员进入：
-
-```text
-系统设置 → Trakt 应用凭据 → 新建凭据
+```dotenv
+FN2TRAKT_IMAGE=spikeding/fn2trakt:4.1.4
 ```
 
-填写名称和 Client ID，Client Secret 留空即可。
+```bash
+docker compose up -d --no-build
+```
 
-保存后，Client ID / Secret 不会再次回显。
+离线环境也可以用 `docker/image/` 下的镜像包 `docker load -i` 载入，再把 `FN2TRAKT_IMAGE` 指向载入的标签。
 
-### 4. 绑定 Trakt 账号
+打开 `http://<NAS-IP>:<FN2TRAKT_HOST_PORT>`，按初始化向导操作。
 
-进入「Trakt 绑定」：
+> **飞牛数据库挂载注意**：常规同步只要只读；v4 的「写入飞牛」需要 `/fntv` 可写、主库 `rw`。`/fntv` 不要加 `:ro`，否则会出现 `could not read full fnTV library: unable to open database file`。完整排查见[飞牛数据库权限与 Docker 挂载](docs/fntv-permissions.md)。
 
-1. 选择当前站内用户
-2. 点击生成授权码
-3. 页面会显示 8 位 code
-4. 在新标签页打开 `auth.trakt.tv/activate`
-5. 输入 code 并批准
-6. 回到 FN2Trakt，等待自动轮询完成绑定
-
-### 5. 开始同步
-
-进入「仪表盘」：
-
-- 点击「立即同步」执行一次全量扫描
-- 或等待定时任务（默认每 5 分钟）
-
-只有满足以下条件的记录会被上传：
-
-- 已看完（`watched=1` 或进度 ≥ 阈值）
-- 能匹配到 Trakt 条目
-- 还没有成功同步过
-
----
-
-## 配置说明
-
-### 环境变量
+关键变量：
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `FN2TRAKT_DATA_DIR` | `/app/data` | 应用数据目录；Docker 中建议 `/data` |
-| `FN2TRAKT_FNTV_DB_PATH` | `.../DB/trimmedia.db` | 飞牛数据库文件路径 |
-| `FN2TRAKT_PORT` | `8080` | 容器内监听端口 |
-| `FN2TRAKT_SECRET_KEY` | 自动生成 | 会话签名密钥；生产环境建议固定 |
-| `FN2TRAKT_COOKIE_SECURE` | `false` | HTTPS 反代后设为 `true` |
-| `FN2TRAKT_SESSION_DAYS` | `30` | 登录会话有效天数 |
-| `FN2TRAKT_ADMIN_USERNAME` | 空 | 可选，首次启动自动创建管理员 |
-| `FN2TRAKT_ADMIN_PASSWORD` | 空 | 与上项配合使用 |
-| `FN2TRAKT_SYNC_ENABLED` | `true` | 是否启用定时同步 |
-| `FN2TRAKT_SYNC_INTERVAL_MINUTES` | `5` | 同步间隔 |
-| `FN2TRAKT_TRAKT_TRUST_ENV` | `true` | 是否读取系统 HTTP(S)_PROXY |
-| `TZ` | `Asia/Shanghai` | 时区 |
-| `PUID` / `PGID` | `1000` | 容器运行用户 |
+| `FN2TRAKT_IMAGE` | `fn2trakt:4.1.4` | 镜像标签（拉取用 `spikeding/fn2trakt:4.1.4`） |
+| `FN2TRAKT_HOST_PORT` | `8080` | 宿主机端口，容器内部固定 8080 |
+| `DATA_DIR` | `./data` | 应用数据目录，挂载到容器 `/data` |
+| `FNTV_DB_DIR` | `./DB` | 飞牛数据库目录；常规同步只读，v4 写入飞牛需可写 |
+| `FNTV_DB_FILE` | `trimmedia.db` | 飞牛数据库文件名 |
+| `PUID` / `PGID` | `1000` | 容器运行用户，NAS 上用 `id` 查看 |
+| `FN2TRAKT_SECRET_KEY` | 自动生成 | 生产环境建议显式设置 |
 
-Docker 部署时，**宿主机路径**通过 `.env` 控制：
+NAS 示例：
 
-| 变量 | 说明 |
+```dotenv
+FN2TRAKT_HOST_PORT=8080
+DATA_DIR=/vol1/docker/fn2trakt/data
+FNTV_DB_DIR=/vol1/@appdata/trim.media/database
+FNTV_DB_FILE=trimmedia.db
+PUID=1000
+PGID=1000
+```
+
+应用数据库位于 `DATA_DIR/fn2trakt.db`；回填备份位于 `DATA_DIR/backups/`。常规同步只读；v4 写入飞牛需要临时写权限，执行前会备份。
+
+详细说明见 [docs/docker.md](docs/docker.md)。
+
+## 🎨 UI 设计
+
+设计方向：**中性灰画布 + 纯白卡片 + 蓝色选中标记 + 液态玻璃按钮**。
+
+- 页面背景为中性灰，内容全部落在白色卡片上，不混用彩色底块
+- 蓝色只用于选中图标、主操作、关键数字和图表，作为唯一强调色
+- 侧边栏和顶栏是独立的白色圆角卡片，菜单选中项为白色药丸 + 蓝色图标
+- 按钮采用 CSS 液态玻璃：多层渐变、顶部反光、四边内高光和轻阴影，参考 liquid-glass-react 的视觉
+- 仪表盘按行对齐：统计行、电影/剧集/排行行、趋势行、明细行，每行卡片等高
+- 电影、剧集直接显示“多少部”的大数字，并拆出播放 / 已看完 / 已同步
+- 卡片统一 20px 圆角，轻边框 + 柔和阴影；不使用大面积毛玻璃和彩色光斑
+- 主题切换在右上角，选择保存在 `localStorage`，首次访问跟随系统偏好
+- 移动端重新排列表格与筛选器，避免横向溢出
+
+| 亮色模式 | 暗黑模式 |
 | --- | --- |
-| `DATA_DIR` | 宿主机上的应用数据目录 |
-| `FNTV_DB_DIR` | 宿主机上的飞牛数据库目录 |
-| `FNTV_DB_FILE` | 目录下的数据库文件名，默认 `trimmedia.db` |
-| `FN2TRAKT_HOST_PORT` | 宿主机端口 |
-| `FN2TRAKT_IMAGE` | 镜像标签 |
+| ![亮色仪表盘](docs/images/dashboard.png) | ![暗黑仪表盘](docs/images/dashboard-dark.png) |
 
-### Volume
+更完整的设计令牌说明见 [docs/ui-design.md](docs/ui-design.md)。
 
-```text
-宿主机 DATA_DIR            -> 容器 /data        （读写）
-宿主机 FNTV_DB_DIR         -> 容器 /fntv        （只读）
-```
+## 🔁 写入飞牛（Trakt → 飞牛数据库）
 
-飞牛数据库是 WAL 模式，**必须挂载目录**，不要只挂 `trimmedia.db` 单个文件，否则 `-wal` / `-shm` 可能读不到。
+「开发者 → 写入飞牛」把 Trakt 观看历史写回飞牛 `item_user_play`，让飞牛 App 也显示为已看。
 
-### 数据文件
+1. 点击「拉取 Trakt 历史」，把完整 Trakt 历史同步到本地镜像（含飞牛库没有的条目）。
+2. 「匹配成功（将写入）」列出能匹配到飞牛媒体库的条目：已有播放记录的标记为「将更新」，在库但无记录标记为「将创建」。
+3. 「无法匹配（将跳过）」列出不在飞牛库、或缺少可播放文件的条目及原因，写入时自动跳过。
+4. 点击「开始写入飞牛」，两步确认：第一步核对写入 / 跳过数量，第二步最终确认。确认后自动备份飞牛数据库再写入。
 
-```text
-DATA_DIR/
-├── fn2trakt.db
-├── .secret_key
-└── backups/
-    └── fn2trakt-YYYYMMDD-HHMMSS-before-backfill.db
-```
+> 预览与写入之间如果数据发生变化（重新拉取、重新匹配），写入会被拒绝并提示重新预览，避免写入与预期不一致。
 
-备份这个目录即可完整备份 FN2Trakt。
+## ⚠️ Trakt → 飞牛数据库写入（v4）
 
----
+「开发者 → 写入飞牛」会把匹配到飞牛库的 Trakt 历史写入飞牛的 `item_user_play`，让飞牛 App 也显示为已看。
 
-## 使用指南
+这是危险操作：
 
-### 仪表盘
+- 只有管理员可见
+- 每次写入前自动备份飞牛数据库
+- 写入完成后可在同页快速恢复
+- **需要容器对飞牛数据库有写权限**（主库 `rw`、目录 `rwx`、`/fntv` 不能 `:ro`）
+- 恢复只覆盖飞牛数据库，不回滚本地 FN2Trakt 数据
 
-查看播放记录、已看完数量、已同步数量、电影 / 剧集统计、最近 30 天趋势和同步状态分布。
-
-### 观看记录
-
-列出飞牛播放记录，显示：
-
-- 媒体标题
-- 播放进度
-- 匹配状态
-- 同步状态
-- 失败原因
-
-支持筛选、搜索、单条重试。
-
-### 媒体匹配
-
-自动匹配失败时，可以手动选择 Trakt 条目。
-
-匹配成功后，下一次同步会自动尝试上传。
-
-### Trakt 回填
-
-「开发者 → Trakt 回填」用于反向补齐本地记录。
-
-1. 拉取 Trakt 历史到本地镜像
-2. 预览匹配结果
-3. 确认后自动备份 `fn2trakt.db`
-4. 更新已有播放记录
-5. 飞牛库有、但没有播放记录的条目会补建
-
-**不会**修改飞牛数据库。
-
-### 个人 API
-
-在「开发者 → API Token」创建 Token：
-
-```text
-fnt_xxxxxxxxxxxxxxxxx
-```
-
-权限：
-
-- `history:read`
-- `library:read`
-- `history:write`
-- `sync:write`（仅管理员）
-
-示例：
+写入前先确认权限：
 
 ```bash
-curl -H "Authorization: Bearer fnt_xxx" \
-  "http://localhost:8080/api/v1/history?page=1&page_size=20"
+docker exec -u 1000 fn2trakt sh -c '
+  cat /fntv/trimmedia.db >/dev/null && echo READ_OK
+  touch /fntv/.write-test && rm /fntv/.write-test && echo WRITE_OK
+'
 ```
+
+必须同时看到 `READ_OK` 和 `WRITE_OK`，否则「开始写入飞牛」会返回 400。
+
+配置文件见 [docs/fntv-writeback.md](docs/fntv-writeback.md)，权限排查见 [docs/fntv-permissions.md](docs/fntv-permissions.md)。
+
+## 🔌 个人 API
+
+在「开发者 → API Token」创建 Token（只显示一次），然后在请求头使用：
+
+```http
+Authorization: Bearer fnt_xxxxxxxxx
+```
+
+| Scope | 能力 |
+| --- | --- |
+| `history:read` | 历史、统计、导出 |
+| `library:read` | 媒体库搜索与本地播放状态 |
+| `history:write` | 拉取 / 刷新自己的 Trakt 历史 |
+| `sync:write` | 触发同步（仅管理员） |
 
 主要接口：
 
 ```text
-GET  /api/v1/health
-GET  /api/v1/me
 GET  /api/v1/history
 GET  /api/v1/history/recent
 GET  /api/v1/history/stats
@@ -447,154 +254,235 @@ GET  /api/v1/library
 GET  /api/v1/sync/status
 POST /api/v1/history/refresh
 POST /api/v1/sync/run
+GET  /api/v1/me
 ```
 
-完整 OpenAPI：`/docs`
+完整说明与示例见 [docs/api-v1.md](docs/api-v1.md)，也可以直接打开 `/docs` 调试 OpenAPI。
 
-### Webhook
+## 🪝 Webhook
 
-在「开发者 → Webhook」添加端点。
-
-事件：
+管理员在「开发者 → Webhook」添加端点，按事件订阅：
 
 | 事件 | 触发时机 |
 | --- | --- |
 | `sync.failed` | 同步失败或部分失败 |
-| `sync.unmatched` | 存在未匹配 / 上传失败的记录 |
-| `sync.completed` | 同步成功且有新上传 |
-| `backfill.completed` | 回填完成 |
+| `sync.unmatched` | 存在未匹配 / 上传失败的记录（同一批只提醒一次） |
+| `sync.completed` | 同步成功且有新记录上传 |
+| `backfill.completed` | 写入飞牛完成 |
 
-配置 Secret 后请求头会带：
+支持四种类型（新建时会按 URL 自动识别，也可手动选择）：
 
-```http
-X-FN2Trakt-Signature: sha256=<HMAC-SHA256(raw_body, secret)>
+| 类型 | 请求格式 | Secret 用途 |
+| --- | --- | --- |
+| 飞书自定义机器人 | `msg_type=text` + `content.text`，签名字段在请求体内 | 机器人「签名校验」密钥，正文附 `timestamp` / `sign`（HMAC-SHA256，Base64） |
+| 钉钉自定义机器人 | `msgtype=markdown` | 加签密钥，URL 追加 `timestamp` / `sign` |
+| 企业微信群机器人 | `msgtype=markdown` | 不需要 |
+| 通用 JSON | FN2Trakt 原始事件 JSON | 附加 `X-FN2Trakt-Signature: sha256=<HMAC-SHA256(raw_body, secret)>` |
+
+飞书报 `19021 sign match fail or timestamp is not within one hour` 表示签名不在请求体内或时间戳偏差超过 1 小时；v4.1.2 起已按官方算法生成，请确认服务器时间同步（NTP）。
+
+失败每 5 分钟自动重试，最多 3 次；「最近投递」会显示平台返回的 `code` / `errcode` 错误。Webhook 使用直连（不读取系统代理），适合局域网 Home Assistant / ntfy 等接收端。
+
+## 🧠 同步规则
+
+| 项目 | 规则 |
+| --- | --- |
+| 纳入同步 | `watched=1`，或播放进度 ≥ 阈值（默认 80%） |
+| 不上传 | 未看完、未匹配、已忽略、已成功同步过的记录 |
+| 观看时间 | 飞牛 `item_user_play.update_time`（毫秒转 UTC） |
+| 写入接口 | `POST /sync/history`，电影按批、剧集按「剧 + 季」聚合 |
+| 去重 | 本地 `(play_id, trakt_account_id)` 唯一；成功记录不再重发 |
+| 失败重试 | 失败 / 阻塞记录会在下次同步时重新尝试，也可手动重试 |
+| 速率限制 | 所有 POST 至少间隔 1.05 秒，自动处理 Trakt 429 |
+| Token | 到期前 12 小时自动刷新；刷新失败标记为需重新授权 |
+
+> 飞牛每个「用户 + 媒体」只有一条播放记录，因此**重复观看同一集不会产生新的 Trakt 历史事件**。当前版本以「补齐历史」为目标；如需记录重看，需要额外的播放事件表。
+
+## 👥 角色与多用户模型
+
+```text
+站内账号 (app_user)
+   ├── 角色：admin / user
+   ├── 绑定一个飞牛用户 (fn_user_guid)
+   └── 授权一个 Trakt 账号 (trakt_account)
+          └── 记录签发时使用的应用凭据 (credential_id)
 ```
 
-失败每 5 分钟重试，最多 3 次。
+| 能力 | 管理员 | 普通用户 |
+| --- | --- | --- |
+| 查看全部用户数据 | ✅ | 仅自己的 |
+| 创建 / 禁用账号 | ✅ | ❌ |
+| 分配 / 绑定飞牛用户 | ✅ | ❌ |
+| 新增 / 编辑 Trakt 应用凭据 | ✅ | ❌（也看不到 Client ID / Secret） |
+| 设备授权码绑定 Trakt | ✅ | ✅ |
+| 媒体匹配、同步全部用户 | ✅ | ❌ |
+| 创建个人 API Token | ✅ | ✅ |
+| 写入飞牛 / Webhook | ✅ | ❌ |
 
----
+- 管理员可在「用户管理」创建账号、绑定飞牛用户、重置密码、停用账号。
+- 管理员默认看到全部用户的汇总数据；普通用户只看到自己飞牛用户的记录。
+- 每套 Trakt 凭据会记录到使用它的 Trakt 账号上，刷新 Token 时优先使用原凭据。
 
-## 项目结构
+## 🗂 项目结构
 
 ```text
 FN2Trakt/
 ├── backend/
 │   ├── app/
-│   │   ├── api/            # FastAPI 路由
+│   │   ├── api/            # FastAPI 路由（含 v1 个人 API、Token、Webhook、历史回填）
 │   │   ├── db/             # SQLAlchemy 模型与会话
-│   │   ├── fntv/           # 飞牛 SQLite 只读读取
-│   │   ├── services/       # 匹配、同步、回填、Webhook、Token
+│   │   ├── fntv/           # 飞牛 SQLite 只读读取、层级解析、归一化
+│   │   ├── services/       # 入库、匹配、同步、Trakt 历史镜像、Webhook、Token
 │   │   ├── trakt/          # Trakt 客户端与设备码授权
+│   │   ├── utils/          # 时间等工具
 │   │   └── main.py
-│   ├── static/             # 构建好的前端
+│   ├── static/             # Vue 构建产物（由后端直接托管）
+│   ├── tests/              # 使用本地 mock Trakt 的集成测试
 │   └── requirements.txt
 ├── frontend/               # Vue 3 + Element Plus + ECharts
+│   ├── public/             # 运行时 Logo / favicon
+│   └── src/
+├── DB/                     # 放置 trimmedia.db（数据库文件不提交）
+├── data/                   # 运行时 SQLite（fn2trakt.db）
+├── logo/                   # 品牌 Logo 源文件（主 Logo、Trakt 标识）
 ├── docker/                 # 容器 entrypoint
-├── docs/                   # 数据库结构与 API 文档
-├── logo/                   # 品牌 Logo
-├── scripts/                # 开发 / 启动脚本
 ├── Dockerfile
-├── docker-compose.yml      # 拉取预构建镜像
-├── docker-compose.build.yml# 源码构建
-├── .env.example
-├── .env.docker.example
+├── docker-compose.yml
+├── docs/                   # 数据库结构、API、截图
+├── scripts/                # dev / run 脚本
 ├── Makefile
-└── README.md
+└── .env.example
 ```
 
----
-
-## 常见问题
-
-### 飞牛数据库会被修改吗？
-
-不会。FN2Trakt 以只读 URI 打开数据库：
+## 📦 发布物分类
 
 ```text
-file:...?mode=ro
+his/        历史版本（V1 / V2）
+release/    正式发布包与 SHA-256
+docker/     x86_64 镜像、纯拉取 Compose、多架构推送脚本
+test/       已测试的中间包（不对外分发）
 ```
 
-所有写操作只发生在 `fn2trakt.db`。
+正式发布包不包含个人数据库、运行数据、测试数据库和带个人观看记录的截图。
 
-### 为什么必须挂载目录而不是单个 db 文件？
+## ⚙️ 环境变量
 
-飞牛数据库是 WAL 模式，除了 `trimmedia.db` 还有：
+复制 `.env.example` 为 `.env`。所有变量以 `FN2TRAKT_` 开头；**页面里保存的设置优先于环境变量**。
 
-```text
-trimmedia.db-wal
-trimmedia.db-shm
-```
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `FN2TRAKT_DATA_DIR` | `./data` | 应用数据目录（SQLite、密钥） |
+| `FN2TRAKT_FNTV_DB_PATH` | `./DB/trimmedia.db` | 飞牛数据库路径 |
+| `FN2TRAKT_SECRET_KEY` | 自动生成 | 会话签名密钥；多实例部署时必须固定 |
+| `FN2TRAKT_SESSION_DAYS` | `30` | 登录会话天数 |
+| `FN2TRAKT_COOKIE_SECURE` | `false` | HTTPS 部署时设为 `true` |
+| `FN2TRAKT_ADMIN_USERNAME` | 空 | 可选：首次启动自动创建管理员 |
+| `FN2TRAKT_ADMIN_PASSWORD` | 空 | 可选：配合上面使用 |
+| `FN2TRAKT_TRAKT_CLIENT_ID` | 空 | 可选：环境变量兜底凭据（优先使用页面中的命名凭据） |
+| `FN2TRAKT_TRAKT_CLIENT_SECRET` | 空 | 可选：仅旧版 OAuth 应用需要 |
+| `FN2TRAKT_TRAKT_API_BASE` | `https://api.trakt.tv` | API 基址（测试 / 代理用） |
+| `FN2TRAKT_TRAKT_AUTH_BASE` | `https://auth.trakt.tv` | OAuth 基址（设备码 / Token） |
+| `FN2TRAKT_TRAKT_TRUST_ENV` | `true` | 是否使用系统 HTTP(S)_PROXY |
+| `FN2TRAKT_SYNC_INTERVAL_MINUTES` | `5` | 默认同步间隔（页面可改） |
+| `FN2TRAKT_SYNC_ENABLED` | `true` | 默认是否启用定时同步（页面可改） |
+| `FN2TRAKT_HOST` / `FN2TRAKT_PORT` | `0.0.0.0` / `8080` | 仅 `python -m app.main` 时生效 |
 
-只挂单文件会丢失 WAL 中的最新数据。
+> 中国大陆访问 Trakt 不稳定时，可给进程设置 `HTTPS_PROXY`，并保持 `FN2TRAKT_TRAKT_TRUST_ENV=true`。
 
-### 容器报 `exec format error`
+## 🔌 API 概览
 
-镜像架构不对。请使用多架构镜像，或在目标机器上重新构建：
+完整列表见 [docs/api.md](docs/api.md)。
+
+- `POST /api/setup` · `POST /api/auth/login` · `GET /api/auth/me`
+- `GET /api/fntv/status` · `POST /api/fntv/refresh`
+- `GET/POST /api/trakt/credentials` · `PATCH/DELETE /api/trakt/credentials/{id}`
+- `POST /api/trakt/device/start` · `GET /api/trakt/device/{id}` · `GET/DELETE /api/trakt/account`
+- `GET /api/plays` · `POST /api/sync/play/{id}` · `GET /api/sync/preview` · `POST /api/sync/run`
+- `GET /api/media/targets` · `POST /api/media/match` · `POST /api/media/reject`
+- `GET /api/dashboard` · `GET /api/sync/runs` · `GET /api/sync/records`
+
+## 🧪 测试
 
 ```bash
-docker build -t fn2trakt:3.0.0 .
+make test
+# 或
+backend/.venv/bin/pip install -r backend/requirements-dev.txt
+cd backend && .venv/bin/python -m pytest tests -q
 ```
 
-### 端口被占用
+测试使用本地 mock Trakt 服务，不会访问真实 Trakt，也不会写入任何真实账号。覆盖：
 
-修改 `.env`：
+- 飞牛数据读取与归一化
+- 设备码生成 / 轮询 / 授权落库
+- 单条上传与重复上传保护
+- 完整同步任务
+- Token 刷新
+- 媒体搜索与设置保存
 
-```dotenv
-FN2TRAKT_HOST_PORT=18080
-```
+## ⚠️ 已知限制
 
-### 权限错误
+- 飞牛同一用户对同一媒体只有一条播放记录，**重看不会重传**。
+- 匹配依赖飞牛写入的 `tmdb_id` / `imdb_id`；缺失时按标题搜索，中文名可能需要手动匹配。
+- 新版 Trakt 应用没有 Client Secret；如果以后 Trakt 调整 `redirect_uri` 校验规则，刷新 Token 失败时按提示重新授权即可。
+- 页面保存的 Client ID / Secret 不会回显；忘记后只能重新输入或新建凭据，请自行备份 `data/fn2trakt.db`。
+- Trakt 返回 `not_found` 时会在「同步记录」中标记失败，需要人工匹配后重试。
+- 定时任务运行在 Web 进程内，**只能单 worker 运行**（不要 `--workers > 1`）。
+- 不内置 HTTPS，公网访问请放在反向代理后，并设置 `FN2TRAKT_COOKIE_SECURE=true`。
+- SQLite 中保存了 Trakt token 明文，请限制 `data/` 目录权限。
 
-让 `PUID` / `PGID` 与数据目录所有者一致：
+## 🩺 常见问题排查
+
+**页面偶发 500，日志出现 `could not read full fnTV library: unable to open database file`**
+
+说明读取完整飞牛媒体库时打不开数据库，基本都是挂载或权限问题（WAL 需要目录可写）：
 
 ```bash
-id -u
-id -g
+docker inspect fn2trakt --format '{{range .Mounts}}{{println .Source .Destination .RW}}{{end}}'
 ```
 
-### 同步失败 / Trakt 无法访问
-
-确认容器能访问：
-
-```text
-api.trakt.tv
-auth.trakt.tv
-```
-
-需要代理时，在 `.env` 设置 `FN2TRAKT_HTTPS_PROXY` / `FN2TRAKT_HTTP_PROXY`。
-
-### 为什么只能单 worker？
-
-定时任务和 Webhook 重试运行在 Web 进程内。
-
-不要使用：
+`/fntv` 必须是 `... /fntv true`；若是 `false`，去掉 compose 里的 `:ro` 后 `docker compose up -d --force-recreate`（`restart` 不生效）。然后确认 UID 1000 能读能写：
 
 ```bash
---workers 2
+docker exec -u 1000 fn2trakt sh -c '
+  cat /fntv/trimmedia.db >/dev/null && echo READ_OK
+  touch /fntv/.write-test && rm /fntv/.write-test && echo WRITE_OK
+'
 ```
 
-否则会重复执行同步任务。保持单进程即可。
+**「写入飞牛」返回 400**
 
----
-
-## 安全建议
-
-- 不要把 `DATA_DIR` 暴露到公网
-- 不要把 `.env`、`fn2trakt.db`、`.secret_key` 提交到 Git
-- 公网访问请放在 HTTPS 反向代理后，并设置 `FN2TRAKT_COOKIE_SECURE=true`
-- Trakt Token 在本地 SQLite 中，请限制 `DATA_DIR` 权限
-- API Token 只显示一次，丢失后重新创建
-
----
-
-## 开发
+先看接口返回的 `detail`：
 
 ```bash
-make install       # 后端依赖
-make install-web   # 前端依赖
-make dev           # 开发模式
-make build         # 构建前端
+curl -s -H "Cookie: fn2t_session=<你的 session>" \
+  "http://<NAS-IP>:8213/api/fntv/writeback/preview?account_id=1"
 ```
 
----
+常见原因：数据库不可写、无法读取飞牛播放记录、绑定的飞牛用户不存在。逐项排查见[飞牛数据库权限与 Docker 挂载](docs/fntv-permissions.md#6-写入飞牛报-400-怎么定位)。
 
+**同步没有自动发生**：定时任务默认每 5 分钟读库 + 上传，可在「系统设置 → 同步策略」调整间隔；「观看记录 → 刷新并同步」可立即触发一次。
+
+**飞牛 App 里看不到 Trakt 的记录**：Trakt → 飞牛是反向写入，需要在「开发者 → 写入飞牛」拉取历史并执行写入，且数据库必须具备写权限。
+
+## 🐳 Docker 交付物
+
+- `Dockerfile`：多阶段构建（Node 构建前端 → Python 运行 FastAPI）
+- `docker-compose.yml`：源码构建部署
+- `docker/deploy/`：纯拉取镜像的 Compose、`.env.example`、多架构推送脚本
+- `docker/image/`：x86_64 离线镜像包与 SHA-256
+- 容器内端口固定 `8080`；compose 默认给 `/fntv` 可写以支持 v4 写入，普通同步仍以只读模式打开数据库
+- 镜像不包含数据库、密钥或 Token
+
+完整说明见 [docs/docker.md](docs/docker.md)。
+
+## 📚 文档
+
+- [飞牛数据库结构说明](docs/fntv-database.md)
+- [飞牛数据库 SQL Schema](docs/fntv-schema.sql)
+- [飞牛数据库权限与 Docker 挂载](docs/fntv-permissions.md)
+- [Trakt → 飞牛写入与恢复](docs/fntv-writeback.md)
+- [HTTP API](docs/api.md)
+
+## 📄 说明
+
+常规同步只读取飞牛影视数据库；v4 的「写入飞牛」是唯一会修改飞牛数据库的功能，执行前必须备份并确认。请自行备份 `data/fn2trakt.db`；解除 Trakt 绑定不会删除已写入 Trakt 的历史。

@@ -8,14 +8,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_admin_user, get_current_user
-from app.db.models import AppUser, MediaItem, MediaMatch, PlayRecord
+from app.db.models import AppUser, MediaItem, MediaMatch
 from app.db.session import get_db
 from app.services.matching import (
     apply_manual_match,
-    collect_targets,
     ensure_matches,
     reject_match,
     search_candidates,
+    target_overview,
 )
 from app.trakt.client import TraktError
 
@@ -41,71 +41,44 @@ def targets(
     user: AppUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    targets_map = collect_targets(db)
-    matches = {m.media_guid: m for m in db.scalars(select(MediaMatch)).all()}
-    media_rows = db.scalars(select(MediaItem).where(MediaItem.fn_type.in_(["Movie", "Episode"]))).all()
-    target_by_item: dict[str, str] = {}
-    media_by_guid = {item.fn_guid: item for item in media_rows}
-    for item in media_rows:
-        target_by_item[item.fn_guid] = (
-            item.show_guid if item.fn_type == "Episode" and item.show_guid else item.fn_guid
-        )
-
-    scope = _scope_user(user)
-    play_rows = db.scalars(select(PlayRecord).where(PlayRecord.completed.is_(True))).all()
-    counts: dict[str, int] = {}
-    samples: dict[str, list[str]] = {}
-    for play in play_rows:
-        if scope and play.fn_user_guid != scope:
-            continue
-        guid = target_by_item.get(play.fn_item_guid)
-        if not guid:
-            continue
-        counts[guid] = counts.get(guid, 0) + 1
-        if len(samples.setdefault(guid, [])) < 3:
-            media = media_by_guid.get(play.fn_item_guid)
-            if media is not None:
-                samples[guid].append(media.title)
+    cards = target_overview(db, user_guid=_scope_user(user))
+    # Every card that has at least one completed play belongs on this page, so
+    # the numbers here always match what 观看记录 reports as unmatched.
+    active = [card for card in cards.values() if card.count > 0]
+    summary = {
+        "unmatched": sum(1 for c in active if c.state == "unmatched"),
+        "auto": sum(1 for c in active if c.state == "auto"),
+        "manual": sum(1 for c in active if c.state == "manual"),
+        "rejected": sum(1 for c in active if c.state == "rejected"),
+    }
 
     items = []
-    for guid, target in targets_map.items():
-        match = matches.get(guid)
-        state = match.status if match else "unmatched"
-        if status != "all" and state != status:
-            continue
-        if counts.get(guid, 0) == 0:
+    for card in active:
+        if status != "all" and card.state != status:
             continue
         items.append(
             {
-                "media_guid": guid,
-                "media_type": target.media_type,
-                "title": target.title,
-                "year": target.year,
-                "tmdb_id": target.tmdb_id,
-                "imdb_id": target.imdb_id,
-                "count": counts.get(guid, 0),
-                "samples": samples.get(guid, []),
+                "media_guid": card.guid,
+                "media_type": card.media_type,
+                "title": card.title,
+                "year": card.year,
+                "tmdb_id": card.tmdb_id,
+                "imdb_id": card.imdb_id,
+                "count": card.count,
+                "samples": card.samples,
+                "orphan": card.orphan,
                 "match": {
-                    "status": state,
-                    "title": match.trakt_title if match else None,
-                    "year": match.trakt_year if match else None,
-                    "slug": match.trakt_slug if match else None,
-                    "source": match.source if match else None,
-                    "ids": match.ids_json if match else None,
+                    "status": card.state,
+                    "title": card.match.trakt_title if card.match else None,
+                    "year": card.match.trakt_year if card.match else None,
+                    "slug": card.match.trakt_slug if card.match else None,
+                    "source": card.match.source if card.match else None,
+                    "ids": card.match.ids_json if card.match else None,
                 },
             }
         )
     items.sort(key=lambda row: (-row["count"], row["title"]))
-    return {
-        "items": items,
-        "total": len(items),
-        "summary": {
-            "unmatched": sum(1 for g in targets_map if (matches.get(g).status if matches.get(g) else "unmatched") == "unmatched" and counts.get(g, 0) > 0),
-            "auto": sum(1 for g in targets_map if (matches.get(g).status if matches.get(g) else "unmatched") == "auto" and counts.get(g, 0) > 0),
-            "manual": sum(1 for g in targets_map if (matches.get(g).status if matches.get(g) else "unmatched") == "manual" and counts.get(g, 0) > 0),
-            "rejected": sum(1 for g in targets_map if (matches.get(g).status if matches.get(g) else "unmatched") == "rejected" and counts.get(g, 0) > 0),
-        },
-    }
+    return {"items": items, "total": len(items), "summary": summary}
 
 
 @router.post("/rematch")

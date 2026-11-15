@@ -27,11 +27,19 @@ export const SYNC_STATUS = {
   pending: { label: '待同步', type: 'warning' },
   failed: { label: '同步失败', type: 'danger' },
   blocked: { label: '待匹配', type: 'info' },
+  rejected: { label: '已忽略', type: 'info' },
   partial: { label: '部分成功', type: 'warning' },
   queued: { label: '排队中', type: 'info' },
   running: { label: '进行中', type: 'info' },
   skipped: { label: '已跳过', type: 'info' },
   incomplete: { label: '未看完', type: 'info' }
+}
+
+// Trakt -> 飞牛 direction, tracked separately from the upload state.
+export const WRITEBACK_STATUS = {
+  none: { label: '—', type: 'muted' },
+  pending: { label: '待写入飞牛', type: 'warning' },
+  written: { label: '已写入飞牛', type: 'success' }
 }
 
 export const MATCH_STATUS = {
@@ -61,6 +69,8 @@ export function syncChipClass(status) {
     failed: 'danger',
     pending: 'warning',
     blocked: 'info',
-    incomplete: 'muted'
+    rejected: 'muted',
+    incomplete: 'muted',
+    written: 'success'
   }[status] || 'muted'
 }

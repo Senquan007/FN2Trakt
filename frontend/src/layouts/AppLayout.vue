@@ -40,7 +40,7 @@
           <div class="foot-state">{{ fntvOk ? '已连接' : '未连接' }}</div>
           <div class="tiny foot-desc">{{ fntvLabel }}</div>
         </div>
-        <div class="version">v3.0.0 · local</div>
+        <div class="version">v{{ appVersion }} · local</div>
       </div>
     </el-aside>
 
@@ -116,6 +116,8 @@ import { ArrowDown, Lock, SwitchButton } from '@element-plus/icons-vue'
 import api, { errMsg } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import ThemeToggle from '@/components/ThemeToggle.vue'
+
+const appVersion = __APP_VERSION__
 
 const auth = useAuthStore()
 const route = useRoute()

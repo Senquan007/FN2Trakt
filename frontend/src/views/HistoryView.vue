@@ -6,7 +6,7 @@
         <p class="page-sub">来自飞牛影视的播放历史，按最后播放时间排序；点击行查看详情。</p>
       </div>
       <div class="page-actions">
-        <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+        <el-button :icon="Refresh" :loading="syncing" @click="refreshAndSync">刷新并同步</el-button>
         <el-button type="primary" :icon="Upload" :loading="syncing" @click="runSync(router)">同步到 Trakt</el-button>
       </div>
     </div>
@@ -30,6 +30,7 @@
           <el-radio-button value="synced">已同步</el-radio-button>
           <el-radio-button value="failed">失败</el-radio-button>
           <el-radio-button value="unmatched">未匹配</el-radio-button>
+          <el-radio-button value="rejected">已忽略</el-radio-button>
         </el-radio-group>
 
         <div class="filter-right">
@@ -81,7 +82,7 @@
         <el-table-column
           label="媒体"
           :width="isMobile ? 140 : undefined"
-          :min-width="isMobile ? undefined : 280"
+          :min-width="isMobile ? undefined : 205"
         >
           <template #default="{ row }">
             <div class="media-cell">
@@ -94,71 +95,72 @@
                   {{ row.year || '—' }}
                   <span v-if="row.tmdb_id && !isMobile"> · TMDB {{ row.tmdb_id }}</span>
                   <span v-if="row.resolution"> · {{ row.resolution }}</span>
-                  <span v-if="isMobile"> · {{ Math.round(row.progress_percent || 0) }}%</span>
+                  <span v-if="isMobile"> · {{ progressOf(row) }}%</span>
                 </div>
               </div>
             </div>
           </template>
         </el-table-column>
 
-        <el-table-column v-if="isAdmin && !isMobile" label="用户" width="110">
+        <el-table-column v-if="!isMobile" label="匹配媒体" min-width="120">
+          <template #default="{ row }">
+            <span v-if="matchedTitle(row) !== '-'" class="match-name ellipsis" :title="matchedTitle(row)">
+              {{ matchedTitle(row) }}
+            </span>
+            <span v-else class="muted">-</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column v-if="isAdmin && !isMobile" label="用户" width="90">
           <template #default="{ row }">
             <span class="chip muted">{{ row.username || '—' }}</span>
           </template>
         </el-table-column>
 
-        <el-table-column v-if="!isMobile" label="进度" width="170">
+        <el-table-column v-if="!isMobile" label="进度" width="152">
           <template #default="{ row }">
             <div class="progress-cell">
               <div class="flex-between" style="margin-bottom: 4px">
                 <span class="tiny" :class="{ muted: !row.completed }">
                   {{ row.completed ? '已看完' : '未看完' }}
                 </span>
-                <span class="tiny muted">{{ Math.round(row.progress_percent || 0) }}%</span>
+                <span class="tiny muted">{{ progressOf(row) }}%</span>
               </div>
               <el-progress
-                :percentage="Math.min(100, Math.round(row.progress_percent || 0))"
+                :percentage="progressOf(row)"
                 :stroke-width="6"
                 :show-text="false"
-                :color="progressColor(row.progress_percent)"
+                :color="progressColor(progressOf(row))"
               />
               <div class="tiny muted" style="margin-top: 3px">
-                {{ formatSeconds(row.position_seconds) }} / {{ formatSeconds(row.runtime_seconds) }}
+                {{ progressCaption(row) }}
               </div>
             </div>
           </template>
         </el-table-column>
 
-        <el-table-column v-if="!isMobile" label="匹配" width="130">
+        <el-table-column v-if="!isMobile" label="匹配" width="90">
           <template #default="{ row }">
-            <div>
-              <span class="chip" :class="matchChipClass(row.match?.status || 'unmatched')">
-                {{ MATCH_STATUS[row.match?.status || 'unmatched']?.label }}
-              </span>
-              <div class="tiny muted ellipsis" style="max-width: 120px; margin-top: 3px">
-                {{ row.match?.title || '—' }}
-              </div>
-            </div>
+            <span class="chip" :class="matchChipClass(row.match?.status || 'unmatched')">
+              {{ MATCH_STATUS[row.match?.status || 'unmatched']?.label }}
+            </span>
           </template>
         </el-table-column>
 
-        <el-table-column label="同步" :width="isMobile ? 88 : 130">
+        <el-table-column label="同步" :width="isMobile ? 84 : 90">
           <template #default="{ row }">
-            <div>
-              <span class="chip" :class="syncChipClass(rowState(row))">{{ SYNC_STATUS[rowState(row)]?.label }}</span>
-              <div class="tiny muted" style="margin-top: 3px">{{ row.sync?.updated_human || '—' }}</div>
-            </div>
+            <span class="chip" :class="syncChipClass(rowState(row))">{{ SYNC_STATUS[rowState(row)]?.label }}</span>
           </template>
         </el-table-column>
 
-        <el-table-column v-if="!isMobile" label="最后播放" width="150">
+        <el-table-column v-if="!isMobile" label="最后播放" width="134">
           <template #default="{ row }">
-            <div>{{ formatDateTime(row.fn_update_time) }}</div>
-            <div class="tiny muted">{{ row.last_play_human }}</div>
+            <div>{{ playDay(row.fn_update_time) }}</div>
+            <div class="tiny muted">{{ playClock(row.fn_update_time) }} · {{ row.last_play_human }}</div>
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" :width="isMobile ? 120 : 150">
+        <el-table-column label="操作" :width="isMobile ? 104 : 118">
           <template #default="{ row }">
             <div class="row-actions" @click.stop>
               <el-tooltip v-if="canSync(row)" content="上传这一条">
@@ -215,10 +217,10 @@
           </div>
           <el-progress
             type="circle"
-            :percentage="Math.min(100, Math.round(detail.progress_percent || 0))"
+            :percentage="progressOf(detail)"
             :width="52"
             :stroke-width="6"
-            :color="progressColor(detail.progress_percent)"
+            :color="progressColor(progressOf(detail))"
           />
         </div>
 
@@ -237,10 +239,16 @@
           <el-descriptions-item v-if="detail.type === 'Episode'" label="季 / 集">
             S{{ String(detail.season_number || 0).padStart(2, '0') }}E{{ String(detail.episode_number || 0).padStart(2, '0') }}
           </el-descriptions-item>
-          <el-descriptions-item label="播放位置">
-            {{ formatSeconds(detail.position_seconds) }} / {{ formatSeconds(detail.runtime_seconds) }}
+          <el-descriptions-item label="播放位置">{{ progressCaption(detail) }}</el-descriptions-item>
+          <el-descriptions-item label="进度">
+            {{ progressOf(detail) }}%
+            <span
+              v-if="detail.completed && Math.round(detail.progress_percent || 0) < 100"
+              class="tiny muted"
+            >
+              · 飞牛原始进度 {{ Math.round(detail.progress_percent || 0) }}%（已看完，播放位置被重置）
+            </span>
           </el-descriptions-item>
-          <el-descriptions-item label="进度">{{ detail.progress_percent ?? 0 }}%</el-descriptions-item>
           <el-descriptions-item label="飞牛 watched">{{ detail.watched ? 'true' : 'false' }}</el-descriptions-item>
           <el-descriptions-item label="开始播放">{{ formatDateTime(detail.fn_create_time) }}</el-descriptions-item>
           <el-descriptions-item label="最后播放">{{ formatDateTime(detail.fn_update_time) }}</el-descriptions-item>
@@ -283,6 +291,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import dayjs from 'dayjs'
 import { Connection, Refresh, Search, TopRight, Upload, View } from '@element-plus/icons-vue'
 import api, { errMsg } from '@/api/client'
 import MatchDialog from '@/components/MatchDialog.vue'
@@ -306,7 +315,16 @@ const isMobile = useMediaQuery('(max-width: 720px)')
 const loading = ref(false)
 const rows = ref([])
 const total = ref(0)
-const summary = ref({ total: 0, completed: 0, synced: 0, pending: 0, failed: 0, blocked: 0, unmatched: 0 })
+const summary = ref({
+  total: 0,
+  completed: 0,
+  synced: 0,
+  pending: 0,
+  failed: 0,
+  blocked: 0,
+  unmatched: 0,
+  rejected: 0
+})
 const users = ref([])
 const detailVisible = ref(false)
 const detail = ref(null)
@@ -339,6 +357,47 @@ function rowState(row) {
   if (!row.match || ['unmatched', 'rejected'].includes(row.match.status)) return 'unmatched'
   if (row.sync?.status) return row.sync.status
   return 'pending'
+}
+
+/**
+ * Title of the Trakt entry this play was matched to.  Ignored / unmatched rows
+ * keep a stale `match.title` from an earlier run, so they are reported as a
+ * plain dash instead.
+ */
+function matchedTitle(row) {
+  const match = row.match
+  if (!match || !match.title || ['unmatched', 'rejected'].includes(match.status)) return '-'
+  return match.title
+}
+
+/**
+ * fnTV clears the resume position of a finished item, so `progress_percent`
+ * can be 0 while the row is already "已看完". Show 100% for those rows to keep
+ * the chip and the bar consistent; `progress_display` comes from the backend
+ * and encodes exactly that rule (older payloads still work via the fallback).
+ */
+function progressOf(row) {
+  const value = row.progress_display ?? (row.completed ? 100 : row.progress_percent)
+  const percent = Number(value) || 0
+  return Math.max(0, Math.min(100, Math.round(percent)))
+}
+
+function progressCaption(row) {
+  if (row.completed) {
+    const total = formatSeconds(row.runtime_seconds)
+    return total === '—' ? '已看完' : `已看完 · 总时长 ${total}`
+  }
+  return `${formatSeconds(row.position_seconds)} / ${formatSeconds(row.runtime_seconds)}`
+}
+
+/* Split the timestamp so the column stays narrow on laptop screens: the date
+   on the first line, clock + relative age on the second. */
+function playDay(value) {
+  return value ? dayjs(value).format('YYYY-MM-DD') : '—'
+}
+
+function playClock(value) {
+  return value ? dayjs(value).format('HH:mm') : ''
 }
 
 function progressColor(value) {
@@ -390,6 +449,84 @@ async function syncOne(row) {
 function onFilterChange() {
   filters.page = 1
   load()
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * One click on "刷新并同步": read the fnTV database, push new plays to Trakt
+ * and reload the table.  The sync endpoint already ingests first, so the user
+ * no longer has to click refresh and sync separately.
+ */
+async function refreshAndSync() {
+  if (syncing.value) return
+  syncing.value = true
+  let runId = null
+  try {
+    try {
+      const data = await api.post('/sync/run', {})
+      runId = data.run_id
+      const ingested = data.ingest || {}
+      const extra =
+        ingested.created || ingested.updated
+          ? `（飞牛新增 ${ingested.created || 0} 条 / 更新 ${ingested.updated || 0} 条）`
+          : ''
+      ElMessage.success(`已触发同步 #${runId}${extra}，完成后自动刷新`)
+    } catch (error) {
+      if (error?.response?.status === 409) {
+        ElMessage.warning('已有同步任务在运行，正在刷新列表')
+      } else {
+        // No Trakt binding (or no fnTV user yet): still re-read the database so
+        // the table reflects the latest plays.
+        await ingestOnly(error)
+      }
+    }
+    await load()
+  } finally {
+    syncing.value = false
+  }
+  if (runId) watchRun(runId)
+}
+
+async function ingestOnly(error) {
+  if (!isAdmin.value) {
+    ElMessage.error(errMsg(error))
+    return
+  }
+  try {
+    const data = await api.post('/fntv/refresh', { force: true, run_matching: true })
+    const snapshot = data.snapshot || {}
+    ElMessage.warning(
+      `已重新读取飞牛数据（播放 ${snapshot.plays || 0} 条）；未触发 Trakt 同步：${errMsg(error)}`
+    )
+  } catch (err) {
+    ElMessage.error(errMsg(err))
+  }
+}
+
+async function watchRun(runId) {
+  for (let i = 0; i < 40; i += 1) {
+    await sleep(1500)
+    try {
+      const data = await api.get('/sync/runs', { params: { page: 1, page_size: 10 } })
+      const run = (data.items || []).find((item) => item.id === runId)
+      if (!run || run.status === 'running') continue
+      await load()
+      const uploaded = run.uploaded || 0
+      if (run.status === 'failed') {
+        ElMessage.error(`同步失败：${run.message || '请到同步记录查看详情'}`)
+      } else if (run.failed) {
+        ElMessage.warning(`同步完成：上传 ${uploaded} 条，失败 ${run.failed} 条`)
+      } else {
+        ElMessage.success(`同步完成：上传 ${uploaded} 条`)
+      }
+      return
+    } catch {
+      return
+    }
+  }
 }
 
 async function load() {
@@ -458,23 +595,24 @@ onMounted(load)
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 12px 16px;
+  padding: 12px 14px;
   border-right: 1px solid var(--line);
 }
-.summary-item:last-child { border-right: none; }
+.summary-item:nth-child(6n) { border-right: none; }
 .summary-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
 .summary-value { font-size: 18px; font-weight: 700; line-height: 1.2; color: var(--ink-strong); }
 .summary-label { font-size: 11px; color: var(--muted); margin-top: 1px; }
 @media (max-width: 1100px) {
   .summary-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .summary-item { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
   .summary-item:nth-child(3n) { border-right: none; }
   .summary-item:nth-child(-n + 3) { border-bottom: 1px solid var(--line); }
+  .summary-item:nth-last-child(-n + 3) { border-bottom: none; }
 }
 @media (max-width: 560px) {
   .summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .summary-item { border-right: none; border-bottom: 1px solid var(--line); padding: 10px 12px; }
   .summary-item:nth-last-child(-n + 2) { border-bottom: none; }
-  .summary-item:nth-child(3n) { border-right: none; }
 }
 
 .filter-bar {
@@ -488,6 +626,9 @@ onMounted(load)
 .filter-right { display: flex; gap: 10px; flex-wrap: wrap; }
 
 .media-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
+/* Eight columns need every pixel on a 13" screen — tighten the default
+   12px cell padding so no column gets squeezed into a wrap. */
+.panel :deep(.el-table .cell) { padding-left: 8px; padding-right: 8px; }
 .media-type {
   flex: none;
   width: 28px;
@@ -504,6 +645,7 @@ onMounted(load)
 .media-type.movie { color: var(--primary-deep); background: var(--primary-soft); }
 .media-title { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.match-name { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink-strong); }
 .row-actions { display: flex; gap: 2px; }
 .pager {
   display: flex;

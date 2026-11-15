@@ -12,7 +12,9 @@ DEFAULTS = {
     "fntv.db_path": None,  # falls back to env
     "sync.interval_minutes": str(env_settings.sync_interval_minutes),
     "sync.enabled": "true" if env_settings.sync_enabled else "false",
+    "sync.ingest_enabled": "true",
     "sync.watched_threshold": "80",
+    "sync.match_retry_hours": "12",
     "sync.auto_start": "true",
     "trakt.redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
 }

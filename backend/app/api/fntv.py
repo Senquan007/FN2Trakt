@@ -8,16 +8,16 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_admin_user, get_current_user
 from app.db.models import AppUser, FnUser, MediaMatch, PlayRecord
 from app.db.session import get_db
-from app.fntv import FnTvError, dump_schema, inspect_database, raw_summary, read_snapshot, read_users
-from app.services.ingest import ingest_snapshot
-from app.services.matching import ensure_matches
-from app.services.settings_service import fntv_db_path, get_float
+from app.fntv import FnTvError, dump_schema, inspect_database, raw_summary, read_users
+from app.services.refresh import RefreshBusy, auto_refresh_enabled, last_state, refresh_fntv
+from app.services.settings_service import fntv_db_path
 
 router = APIRouter(prefix="/api/fntv", tags=["fntv"])
 
 
 class RefreshPayload(BaseModel):
     run_matching: bool = True
+    force: bool = True
 
 
 @router.get("/status")
@@ -36,7 +36,13 @@ def status(user: AppUser = Depends(get_current_user), db: Session = Depends(get_
         "completed": db.scalar(select(func.count(PlayRecord.id)).where(PlayRecord.completed.is_(True))) or 0,
         "unmatched": db.scalar(select(func.count(MediaMatch.id)).where(MediaMatch.status == "unmatched")) or 0,
     }
-    return {"database": info, "summary": summary, "cached": cached, "path": str(path)}
+    return {
+        "database": info,
+        "summary": summary,
+        "cached": cached,
+        "path": str(path),
+        "refresh": {**last_state(db), "auto_enabled": auto_refresh_enabled(db)},
+    }
 
 
 @router.get("/users")
@@ -79,28 +85,22 @@ def refresh(
     admin: AppUser = Depends(get_admin_user),
     db: Session = Depends(get_db),
 ):
-    path = fntv_db_path(db)
-    threshold = get_float(db, "sync.watched_threshold", 80.0)
     try:
-        snapshot = read_snapshot(path, watched_threshold=threshold)
+        result = refresh_fntv(
+            db,
+            trigger="manual",
+            force=payload.force,
+            run_matching=payload.run_matching,
+        )
+    except RefreshBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except FnTvError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    result = ingest_snapshot(db, snapshot)
-    db.commit()
-    match_stats = ensure_matches(db) if payload.run_matching else None
-    return {
-        "snapshot": {
-            "users": result.users,
-            "media": result.media,
-            "plays": result.plays,
-            "completed": result.completed,
-            "created": result.created_plays,
-            "updated": result.updated_plays,
-            "skipped": snapshot.skipped,
-            "warnings": result.warnings,
-        },
-        "matching": match_stats,
-    }
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if result.get("snapshot") is None:
+        # Unchanged database (force=False): replay the previous summary so the
+        # caller still gets a meaningful payload.
+        result["snapshot"] = result.get("last_refresh_summary")
+    return result
 
 
 @router.get("/schema")

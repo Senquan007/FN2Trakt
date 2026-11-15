@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from app.fntv.conn import open_readonly
 from app.fntv.models import (
     FnItemRow,
     FnTvError,
@@ -23,16 +24,11 @@ _YEAR_RE = re.compile(r"(\d{4})")
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    if not path.exists():
-        raise FnTvError(f"飞牛数据库不存在: {path}")
-    if not path.is_file():
-        raise FnTvError(f"飞牛数据库路径不是文件: {path}")
-    try:
-        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
-    except sqlite3.Error as exc:  # pragma: no cover - depends on host state
-        raise FnTvError(f"无法打开飞牛数据库: {exc}") from exc
-    con.row_factory = sqlite3.Row
-    return con
+    """Open the fnTV database read-only, tolerating transient failures.
+
+    See :mod:`app.fntv.conn` for why this is not a bare ``sqlite3.connect``.
+    """
+    return open_readonly(path)
 
 
 def _columns(con: sqlite3.Connection, table: str) -> list[str]:
@@ -448,7 +444,7 @@ def read_library(path: Path) -> list[dict[str, Any]]:
     """Return every Movie/Episode in the fnTV item table.
 
     ``read_snapshot`` only returns items that have a play record; this helper is
-    used by the Trakt backfill to distinguish "in library but never played"
+    used by the Trakt write-back to distinguish "in library but never played"
     from "not in library at all".
     """
     con = _connect(path)

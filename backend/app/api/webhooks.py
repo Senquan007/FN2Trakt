@@ -10,6 +10,7 @@ from app.db.models import AppUser, WebhookDelivery, WebhookEndpoint
 from app.db.session import get_db
 from app.services.webhooks import (
     EVENTS,
+    FORMATS,
     WebhookError,
     create_endpoint,
     public_delivery,
@@ -27,6 +28,7 @@ class WebhookCreate(BaseModel):
     url: str = Field(min_length=1, max_length=1024)
     events: list[str] | None = None
     secret: str | None = Field(default=None, max_length=255)
+    format: str | None = Field(default=None, max_length=16)
     enabled: bool = True
 
 
@@ -36,6 +38,7 @@ class WebhookUpdate(BaseModel):
     events: list[str] | None = None
     secret: str | None = Field(default=None, max_length=255)
     clear_secret: bool = False
+    format: str | None = Field(default=None, max_length=16)
     enabled: bool | None = None
 
 
@@ -52,6 +55,7 @@ def list_endpoints(admin: AppUser = Depends(get_admin_user), db: Session = Depen
     return {
         "items": [public_endpoint(row) for row in rows],
         "events": [{"key": key, "label": label} for key, label in EVENTS.items()],
+        "formats": [{"key": key, "label": label} for key, label in FORMATS.items()],
     }
 
 
@@ -62,7 +66,15 @@ def create(
     db: Session = Depends(get_db),
 ):
     try:
-        row = create_endpoint(db, payload.name, payload.url, payload.events, payload.secret, payload.enabled)
+        row = create_endpoint(
+            db,
+            payload.name,
+            payload.url,
+            payload.events,
+            payload.secret,
+            payload.enabled,
+            payload.format,
+        )
     except WebhookError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"endpoint": public_endpoint(row)}
@@ -86,6 +98,7 @@ def update(
             secret=payload.secret,
             clear_secret=payload.clear_secret,
             enabled=payload.enabled,
+            format=payload.format,
         )
     except WebhookError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

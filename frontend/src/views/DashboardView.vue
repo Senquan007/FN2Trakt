@@ -118,7 +118,7 @@
             <p class="panel-desc">按已看完的集数排序</p>
           </div>
         </div>
-        <div class="top-list">
+        <div class="top-list" :class="{ sparse: topRows.length < 4 }">
           <div v-if="!topRows.length" class="empty" style="padding: 30px 10px">暂无数据</div>
           <div v-for="(show, index) in topRows" :key="show.title" class="top-row">
             <span class="rank" :class="{ top: index < 3 }">{{ index + 1 }}</span>
@@ -487,13 +487,16 @@ onMounted(() => {
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
+  gap: 14px;
 }
+
+.stat { padding: 15px 18px; }
+.stat-value { font-size: 27px; margin-top: 7px; }
 
 .dash-row {
   display: grid;
-  gap: 16px;
-  margin-top: 16px;
+  gap: 14px;
+  margin-top: 14px;
 }
 .row-types { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr); }
 .row-chart { grid-template-columns: minmax(0, 1.72fr) minmax(0, 1fr); }
@@ -528,7 +531,7 @@ onMounted(() => {
 .notice-desc { font-size: 12px; color: var(--muted); margin-top: 2px; }
 
 .type-card { display: flex; flex-direction: column; overflow: hidden; }
-.type-head { padding: 18px 18px 0; align-items: flex-start; }
+.type-head { padding: 14px 16px 0; align-items: flex-start; }
 .type-title-wrap { display: flex; align-items: center; gap: 10px; }
 .type-icon {
   width: 36px;
@@ -544,15 +547,16 @@ onMounted(() => {
 }
 .type-icon.show { color: var(--primary-deep); }
 .type-body {
-  padding: 14px 18px 16px;
+  padding: 12px 16px 14px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  justify-content: space-between;
+  gap: 12px;
   flex: 1;
 }
-.type-number { display: flex; align-items: baseline; gap: 7px; min-height: 44px; }
+.type-number { display: flex; align-items: baseline; gap: 7px; min-height: 38px; }
 .type-number b {
-  font-size: 38px;
+  font-size: 34px;
   font-weight: 750;
   letter-spacing: -0.05em;
   line-height: 1;
@@ -566,10 +570,18 @@ onMounted(() => {
   padding-top: 12px;
   border-top: 1px solid var(--line);
 }
-.type-metrics div { display: flex; flex-direction: column; gap: 2px; }
-.type-metrics b { font-size: 15px; font-weight: 650; color: var(--ink-strong); line-height: 1.2; }
+.type-metrics div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 11px;
+  border-radius: 10px;
+  background: var(--glass-soft);
+  border: 1px solid var(--glass-border);
+}
+.type-metrics b { font-size: 16px; font-weight: 650; color: var(--ink-strong); line-height: 1.2; }
 .type-metrics span { font-size: 11px; color: var(--muted); }
-.type-foot { margin-top: auto; }
+.type-foot { margin-top: 0; }
 .type-bar { height: 4px; border-radius: 99px; background: var(--line); overflow: hidden; margin-bottom: 6px; }
 .type-bar span {
   display: block;
@@ -589,17 +601,20 @@ onMounted(() => {
 .top-list {
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: space-between;
   flex: 1;
-  padding: 4px 18px;
+  padding: 2px 16px 4px;
 }
-.top-row { display: flex; align-items: center; gap: 10px; min-height: 54px; padding: 6px 0; }
+.top-row { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
+/* With only a couple of rows, spreading them across the full height looks
+   disconnected; keep them together in the middle instead. */
+.top-list.sparse { justify-content: center; gap: 6px; }
 .top-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 10px 18px;
+  padding: 8px 16px;
   border-top: 1px solid var(--line);
 }
 .rank {
@@ -618,7 +633,7 @@ onMounted(() => {
 .rank.top { color: var(--primary); background: var(--primary-soft); border-color: color-mix(in srgb, var(--primary) 16%, transparent); }
 .top-main { flex: 1; min-width: 0; }
 .top-name { font-size: 13px; font-weight: 600; color: var(--ink); max-width: 72%; }
-.rank-bar { height: 4px; background: var(--line); border-radius: 99px; margin-top: 6px; overflow: hidden; }
+.rank-bar { height: 4px; background: var(--line); border-radius: 99px; margin-top: 4px; overflow: hidden; }
 .rank-bar span {
   display: block;
   height: 100%;
@@ -683,6 +698,6 @@ onMounted(() => {
   .row-types .top-card { grid-column: auto; }
   .notice { align-items: flex-start; flex-wrap: wrap; }
   .notice .el-button { margin-left: 46px; }
-  .type-number b { font-size: 32px; }
+  .type-number b { font-size: 30px; }
 }
 </style>

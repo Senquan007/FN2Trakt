@@ -9,9 +9,7 @@ from app.api.deps import get_admin_user
 from app.db.models import AppUser, TraktAccount, TraktHistory
 from app.db.session import get_db
 from app.services.trakt_history import (
-    apply_backfill,
     history_summary,
-    preview_backfill,
     pull_history,
 )
 from app.trakt.client import TraktError
@@ -21,11 +19,6 @@ router = APIRouter(prefix="/api/trakt/history", tags=["trakt-history"])
 
 class HistoryAction(BaseModel):
     account_id: int | None = None
-
-
-class BackfillApply(BaseModel):
-    account_id: int | None = None
-    confirm: bool = False
 
 
 def _account(db: Session, admin: AppUser, account_id: int | None) -> TraktAccount:
@@ -89,28 +82,3 @@ def pull(
     except TraktError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"account": {"id": account.id, "trakt_username": account.trakt_username}, **result}
-
-
-@router.get("/preview")
-def preview(
-    account_id: int | None = None,
-    admin: AppUser = Depends(get_admin_user),
-    db: Session = Depends(get_db),
-):
-    account = _account(db, admin, account_id)
-    return {"account": {"id": account.id, "trakt_username": account.trakt_username}, **preview_backfill(db, account)}
-
-
-@router.post("/apply")
-def apply(
-    payload: BackfillApply,
-    admin: AppUser = Depends(get_admin_user),
-    db: Session = Depends(get_db),
-):
-    if not payload.confirm:
-        raise HTTPException(status_code=400, detail="请确认已了解该操作会修改本地观看记录")
-    account = _account(db, admin, payload.account_id)
-    try:
-        return apply_backfill(db, account)
-    except TraktError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc

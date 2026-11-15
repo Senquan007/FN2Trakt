@@ -56,6 +56,41 @@
             <div><b>{{ dbStatus?.cached?.unmatched ?? 0 }}</b><span>未匹配媒体</span></div>
           </div>
 
+          <div class="db-facts mt-16">
+            <div class="info-row">
+              <span class="info-label">媒体条目</span>
+              <span>{{ dbStatus?.database?.counts?.item ?? '—' }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">飞牛用户</span>
+              <span>{{ dbStatus?.database?.counts?.user ?? '—' }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">播放记录</span>
+              <span>{{ dbStatus?.database?.counts?.item_user_play ?? '—' }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">数据库大小</span>
+              <span>{{ dbSizeText }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">最近读取</span>
+              <span>{{ scheduler?.last_refresh_at ? formatDateTime(scheduler.last_refresh_at) : '尚未读取' }}</span>
+            </div>
+            <div class="info-row" style="border-bottom: none">
+              <span class="info-label">读取来源</span>
+              <span>
+                {{
+                  scheduler?.last_refresh_trigger
+                    ? scheduler.last_refresh_trigger === 'scheduled'
+                      ? '定时任务'
+                      : '手动触发'
+                    : '—'
+                }}
+              </span>
+            </div>
+          </div>
+
           <div class="flex mt-16 db-actions" style="flex-wrap: wrap">
             <el-button type="primary" :loading="savingPath" @click="savePath">保存路径</el-button>
             <el-button :loading="refreshing" :icon="Download" @click="refreshData">重新读取飞牛数据</el-button>
@@ -71,19 +106,29 @@
         <div class="panel-head">
           <div>
             <h3 class="panel-title"><el-icon><Refresh /></el-icon> 同步策略</h3>
-            <p class="panel-desc">后台定时扫描新完成的记录并自动上传</p>
+            <p class="panel-desc">后台定时读取飞牛数据库，并把新看完的记录上传到 Trakt</p>
           </div>
           <el-switch v-model="form.sync_enabled" />
         </div>
         <div class="panel-pad">
           <el-form label-position="top">
-            <el-form-item label="同步间隔（分钟）">
+            <el-form-item label="扫描间隔（分钟）">
               <el-input-number v-model="form.sync_interval_minutes" :min="1" :max="1440" style="width: 100%" />
-              <div class="tiny muted" style="margin-top: 6px">默认 5 分钟；修改后定时任务立即生效。</div>
+              <div class="tiny muted" style="margin-top: 6px">
+                默认 5 分钟。每轮扫描都会先读取飞牛数据库里新增 / 变化的播放记录，再上传 Trakt，无需手动点按钮。
+              </div>
+            </el-form-item>
+            <el-form-item label="自动读取飞牛数据库">
+              <div class="flex" style="gap: 10px; align-items: center">
+                <el-switch v-model="form.ingest_enabled" />
+                <span class="tiny muted">
+                  {{ form.ingest_enabled ? '跟随扫描间隔自动读取' : '仅手动点「重新读取飞牛数据」时读取' }}
+                </span>
+              </div>
             </el-form-item>
             <el-form-item :label="`上传进度阈值：${form.watched_threshold}%`" class="threshold-item">
               <el-slider v-model="form.watched_threshold" :min="50" :max="100" :step="1" />
-              <div class="tiny muted" style="margin-top: 14px">
+              <div class="tiny muted" style="margin-top: 10px">
                 飞牛 watched=1，或播放进度达到该阈值（默认 80%），即视为已看完并纳入上传。
               </div>
             </el-form-item>
@@ -91,6 +136,36 @@
 
 
           <el-button type="primary" class="mt-16" :loading="savingSync" @click="saveSync">保存同步设置</el-button>
+
+          <div class="sync-state mt-16">
+            <div class="sync-state-row">
+              <span>下一次自动扫描</span>
+              <b>{{ scheduler?.next_run_at ? formatDateTime(scheduler.next_run_at) : '未调度' }}</b>
+            </div>
+            <div class="sync-state-row">
+              <span>最近读取飞牛数据库</span>
+              <b>{{ scheduler?.last_refresh_at ? formatDateTime(scheduler.last_refresh_at) : '尚未读取' }}</b>
+            </div>
+            <div v-if="scheduler?.last_refresh_summary" class="sync-state-row">
+              <span>最近读取结果</span>
+              <b>
+                播放 {{ scheduler.last_refresh_summary.plays ?? 0 }} 条 · 新增
+                {{ scheduler.last_refresh_summary.created ?? 0 }} · 更新
+                {{ scheduler.last_refresh_summary.updated ?? 0 }}
+              </b>
+            </div>
+            <div v-if="scheduler?.last_refresh_trigger" class="tiny muted">
+              来源：{{ scheduler.last_refresh_trigger === 'scheduled' ? '定时任务' : '手动触发' }}
+            </div>
+            <el-alert
+              v-if="scheduler?.last_refresh_error"
+              type="error"
+              :closable="false"
+              show-icon
+              class="mt-8"
+              :title="`自动读取失败：${scheduler.last_refresh_error}`"
+            />
+          </div>
         </div>
       </div>
     </div>
@@ -192,11 +267,15 @@
                   : '未配置'
             }}</span>
           </div>
-          <div class="info-row" style="border-bottom: none">
+          <div class="info-row">
             <span class="info-label">Secret</span>
             <span>{{ settings?.trakt?.has_secret ? '已设置' : '未设置（PKCE 正常）' }}</span>
           </div>
-          <el-button type="primary" plain :icon="Link" class="mt-16" @click="$router.push('/trakt')">
+          <div class="info-row" style="border-bottom: none">
+            <span class="info-label">应用凭据</span>
+            <span>{{ settings?.trakt?.credential_count ?? 0 }} 套</span>
+          </div>
+          <el-button type="primary" plain :icon="Link" class="mt-16 bind-action" @click="$router.push('/trakt')">
             前往 Trakt 绑定页
           </el-button>
         </div>
@@ -211,15 +290,11 @@
           </div>
         </div>
         <div class="panel-pad">
-          <div class="info-row"><span class="info-label">版本</span><span>FN2Trakt v3.0.0</span></div>
+          <div class="info-row"><span class="info-label">版本</span><span>FN2Trakt v{{ appVersion }}</span></div>
           <div class="info-row"><span class="info-label">飞牛数据库</span><span class="mono tiny">{{ settings?.fntv_db_path || '—' }}</span></div>
           <div class="info-row"><span class="info-label">应用数据库</span><span class="mono tiny">data/fn2trakt.db</span></div>
           <div class="info-row"><span class="info-label">定时任务</span><span>{{ settings?.scheduler?.interval_minutes || 5 }} 分钟</span></div>
-          <div class="info-row"><span class="info-label">下次同步</span><span>{{ settings?.scheduler?.next_run_at ? formatDateTime(settings.scheduler.next_run_at) : '—' }}</span></div>
-          <div class="info-row" style="border-bottom: none">
-            <span class="info-label">凭据数量</span>
-            <span>{{ settings?.trakt?.credential_count ?? 0 }} 套</span>
-          </div>
+          <div class="info-row" style="border-bottom: none"><span class="info-label">下次同步</span><span>{{ settings?.scheduler?.next_run_at ? formatDateTime(settings.scheduler.next_run_at) : '—' }}</span></div>
         </div>
       </div>
     </div>
@@ -304,11 +379,13 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download, Key, Link, Plus, Refresh } from '@element-plus/icons-vue'
 import api, { errMsg } from '@/api/client'
 import { formatDateTime } from '@/utils/format'
+
+const appVersion = __APP_VERSION__
 
 const loading = ref(false)
 const savingPath = ref(false)
@@ -328,8 +405,18 @@ const savingCredential = ref(false)
 const form = reactive({
   fntv_db_path: '',
   sync_enabled: true,
+  ingest_enabled: true,
   sync_interval_minutes: 5,
   watched_threshold: 80
+})
+
+const scheduler = computed(() => settings.value?.scheduler || null)
+
+const dbSizeText = computed(() => {
+  const bytes = dbStatus.value?.database?.size_bytes
+  if (!bytes) return '—'
+  const mb = bytes / 1024 / 1024
+  return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb.toFixed(1)} MB`
 })
 
 const createForm = reactive({
@@ -361,6 +448,7 @@ async function load() {
     credentials.value = credentialData.items || []
     form.fntv_db_path = settingData.fntv_db_path
     form.sync_enabled = settingData.sync.enabled
+    form.ingest_enabled = settingData.sync.ingest_enabled !== false
     form.sync_interval_minutes = settingData.sync.interval_minutes
     form.watched_threshold = settingData.sync.watched_threshold
   } catch (error) {
@@ -394,9 +482,9 @@ async function savePath() {
 async function refreshData() {
   refreshing.value = true
   try {
-    const data = await api.post('/fntv/refresh', { run_matching: true })
-    const snap = data.snapshot
-    refreshResult.value = `${new Date().toLocaleTimeString('zh-CN')} · 读取 ${snap.plays} 条，已看完 ${snap.completed} 条，新增 ${snap.created}，更新 ${snap.updated}`
+    const data = await api.post('/fntv/refresh', { run_matching: true, force: true })
+    const snap = data.snapshot || {}
+    refreshResult.value = `${new Date().toLocaleTimeString('zh-CN')} · 读取 ${snap.plays ?? 0} 条，已看完 ${snap.completed ?? 0} 条，新增 ${snap.created ?? 0}，更新 ${snap.updated ?? 0}`
     ElMessage.success('飞牛数据已重新读取')
     await load()
   } catch (error) {
@@ -411,6 +499,7 @@ async function saveSync() {
   try {
     await api.put('/settings', {
       sync_enabled: form.sync_enabled,
+      ingest_enabled: form.ingest_enabled,
       sync_interval_minutes: form.sync_interval_minutes,
       watched_threshold: form.watched_threshold
     })
@@ -518,9 +607,9 @@ onMounted(load)
 </script>
 
 <style scoped>
-.stat-mini { display: flex; gap: 22px; padding: 13px 15px; background: var(--glass-soft); border: 1px solid var(--glass-border); border-radius: 16px; }
+.stat-mini { display: flex; gap: 20px; padding: 12px 14px; background: var(--glass-soft); border: 1px solid var(--glass-border); border-radius: 14px; }
 .stat-mini div { display: flex; flex-direction: column; }
-.stat-mini b { font-size: 18px; }
+.stat-mini b { font-size: 17px; }
 .stat-mini span { font-size: 11.5px; color: var(--muted); }
 .scheduler-box { padding: 13px 15px; border: 1px dashed var(--line-strong); border-radius: 16px; background: var(--glass-soft); }
 .stat-mini b { color: var(--ink-strong); }
@@ -528,15 +617,55 @@ onMounted(load)
 .info-row {
   display: flex;
   justify-content: space-between;
+  align-items: baseline;
   gap: 12px;
   padding: 9px 0;
   border-bottom: 1px dashed var(--line);
   font-size: 12.5px;
 }
-.info-label { color: var(--muted); }
-.settings-top, .settings-bottom { align-items: stretch; }
-.settings-top > .panel, .settings-bottom > .panel { height: 100%; }
+.info-label { color: var(--muted); flex: none; }
+/* Long paths must wrap inside their own cell instead of squeezing the label
+   into a one-character-wide column on narrow screens. */
+.info-row > span:last-child { min-width: 0; text-align: right; overflow-wrap: anywhere; }
+/* Cards in the top row share one height so the bottom edges line up; the
+   shorter card grows its fact list instead of leaving an L-shaped gap. */
+.settings-top { align-items: stretch; }
+.settings-top .panel-pad { padding: 16px 18px 18px; }
+.settings-top .mt-16 { margin-top: 12px; }
+.settings-top .mt-8 { margin-top: 6px; }
+.settings-top :deep(.el-form-item) { margin-bottom: 14px; }
+/* Bottom row: same treatment as the top row — both cards share one height and
+   the shorter one pushes its action button to the bottom edge. */
+.settings-bottom { align-items: stretch; }
+.settings-bottom > .panel { display: flex; flex-direction: column; }
+.settings-bottom > .panel > .panel-pad { flex: 1; display: flex; flex-direction: column; }
+.settings-bottom .bind-action { margin-top: auto; align-self: flex-start; }
 .db-card { display: flex; flex-direction: column; }
-.db-card > .panel-pad { flex: 1; display: flex; flex-direction: column; }
-.db-card .db-actions { margin-top: auto; }
+.db-card > .panel-pad { display: flex; flex-direction: column; flex: 1; }
+.db-facts {
+  padding: 2px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--glass-soft);
+}
+.db-facts .info-row { padding: 8px 0; }
+.db-card .db-actions { margin-top: auto; padding-top: 18px; }
+.sync-state {
+  padding: 11px 13px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+  background: var(--glass-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.sync-state-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12.5px;
+}
+.sync-state-row span { color: var(--muted); }
+.sync-state-row b { color: var(--ink-strong); font-weight: 620; text-align: right; }
 </style>

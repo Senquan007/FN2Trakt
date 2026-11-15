@@ -27,6 +27,8 @@ deploy
 # --- categorized artifacts ---
 his
 test
+docker/image
+docker/deploy
 .docker
 .workbuddy
 fn2trakt-*.tar.gz

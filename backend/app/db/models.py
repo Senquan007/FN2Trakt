@@ -325,6 +325,8 @@ class WebhookEndpoint(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     url: Mapped[str] = mapped_column(String(1024), nullable=False)
+    # generic | feishu | dingtalk | wecom — drives the payload shape.
+    format: Mapped[str | None] = mapped_column(String(16), default="generic", nullable=True)
     secret: Mapped[str | None] = mapped_column(Text, nullable=True)
     events: Mapped[list | None] = mapped_column(JSON, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

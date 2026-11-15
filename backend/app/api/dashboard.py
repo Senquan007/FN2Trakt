@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
-from app.api.serializers import media_display, sync_dict
+from app.api.serializers import media_display, progress_display, sync_dict
 from app.db.models import (
     AppUser,
     FnUser,
@@ -149,7 +149,7 @@ def dashboard(user: AppUser = Depends(get_current_user), db: Session = Depends(g
                 "id": play.id,
                 "title": media_display(media) if media else "未知条目",
                 "type": media.fn_type if media else "Unknown",
-                "progress": play.progress_percent,
+                "progress": progress_display(play),
                 "watched_at": to_iso_z(play.fn_update_time),
                 "watched_human": humanize_age(play.fn_update_time),
                 "match_status": match.status if match else "unmatched",
