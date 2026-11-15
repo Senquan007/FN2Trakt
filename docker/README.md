@@ -2,45 +2,50 @@
 
 ## 目录
 
-- `image/`：x86_64 离线镜像包与 SHA-256（按需用 `docker save` 生成，命名 `fn2trakt-<版本>-amd64.tar.gz`）
-- `deploy/`：从 Docker Hub 拉取镜像的 Compose 部署
-- `entrypoint.sh`：源码构建镜像时使用的启动脚本
-
-源码构建配置在仓库根目录：`Dockerfile`、`docker-compose.yml`、`.env.docker.example`。
+- `../docker-compose.yml`：**推荐**，直接拉取 `spikeding/fn2trakt:4.1.4`，配置写在文件内（不使用 `.env`）
+- `../docker-compose.build.yml`：源码构建镜像
+- `entrypoint.sh`：容器启动脚本（按 `PUID:PGID` 修正数据目录、生成密钥等）
+- `push.sh`：把本地 amd64 / arm64 镜像合并成多架构清单并推送到 Docker Hub
 
 ## 直接拉取镜像（推荐）
 
 ```bash
-docker pull spikeding/fn2trakt:4.1.4
-cp docker/deploy/.env.example .env
-# 编辑 .env：FN2TRAKT_IMAGE=spikeding/fn2trakt:4.1.4、DATA_DIR、FNTV_DB_DIR
-docker compose --project-directory . -f docker/deploy/docker-compose.yml up -d --no-build
+curl -O https://raw.githubusercontent.com/Senquan007/FN2Trakt/main/docker-compose.yml
+# 改两处：ports 左边端口、/fntv 的宿主机目录
+docker compose up -d
 ```
 
-## x86_64 离线部署
+打开 `http://<NAS-IP>:8213`。
 
-有离线包时（`fn2trakt-4.1.4-amd64.tar.gz`）：
+## 离线部署
 
-```bash
-docker load -i docker/image/fn2trakt-4.1.4-amd64.tar.gz
-cp docker/deploy/.env.example .env
-# 编辑 .env，至少设置 FN2TRAKT_IMAGE / DATA_DIR / FNTV_DB_DIR
-docker compose --project-directory . -f docker/deploy/docker-compose.yml up -d
-```
-
-没有离线包时可以先导出：
+镜像已在 Docker Hub 发布，需要离线搬运时先在联网机器导出：
 
 ```bash
 docker pull spikeding/fn2trakt:4.1.4
-docker save spikeding/fn2trakt:4.1.4 | gzip > docker/image/fn2trakt-4.1.4-amd64.tar.gz
-shasum -a 256 docker/image/fn2trakt-4.1.4-amd64.tar.gz > docker/image/fn2trakt-4.1.4-amd64.tar.gz.sha256
+docker save spikeding/fn2trakt:4.1.4 | gzip > fn2trakt-4.1.4.tar.gz
+shasum -a 256 fn2trakt-4.1.4.tar.gz > fn2trakt-4.1.4.tar.gz.sha256
+```
+
+目标机器：
+
+```bash
+docker load -i fn2trakt-4.1.4.tar.gz
+docker compose up -d
 ```
 
 ## 源码构建
 
 ```bash
-cp .env.docker.example .env
-docker compose up -d --build
+docker compose -f docker-compose.build.yml up -d --build
+```
+
+## 发布镜像（维护者）
+
+```bash
+docker buildx build --platform linux/amd64 -t fn2trakt:4.1.4-amd64 --load .
+docker buildx build --platform linux/arm64 -t fn2trakt:4.1.4 --load .
+./docker/push.sh <dockerhub用户名>
 ```
 
 ## 挂载权限

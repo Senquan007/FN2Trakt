@@ -1,40 +1,61 @@
+# FN2Trakt · Docker Compose 部署（推荐方式）
+#
+# 用法：
+#   1. 把本文件放到任意目录（例如 /vol1/docker/fn2trakt）
+#   2. 只改下面标了「改这里」的两处：宿主机端口、飞牛数据库目录
+#   3. docker compose up -d
+#
+# 本项目不使用 .env：所有配置直接写在这份文件里，改完重新 up -d 即生效。
+# 需要源码构建时用同目录的 docker-compose.build.yml。
+
 name: fn2trakt
 
 services:
   fn2trakt:
-    image: ${FN2TRAKT_IMAGE:-fn2trakt:4.1.4}
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: spikeding/fn2trakt:4.1.4
     container_name: fn2trakt
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
+
     ports:
-      - "${FN2TRAKT_HOST_PORT:-8080}:8080"
+      # 改这里：宿主机端口，容器内固定 8080
+      - "8213:8080"
+
     environment:
-      TZ: "${TZ:-Asia/Shanghai}"
-      PUID: "${PUID:-1000}"
-      PGID: "${PGID:-1000}"
+      TZ: Asia/Shanghai
+      # 容器运行用户，NAS 上用 `id` 查看
+      PUID: "1000"
+      PGID: "1000"
+      # 容器内路径，必须是 /data，不是宿主机路径
       FN2TRAKT_DATA_DIR: /data
-      FN2TRAKT_FNTV_DB_PATH: "/fntv/${FNTV_DB_FILE:-trimmedia.db}"
+      FN2TRAKT_FNTV_DB_PATH: /fntv/trimmedia.db
       FN2TRAKT_PORT: "8080"
-      FN2TRAKT_SECRET_KEY: "${FN2TRAKT_SECRET_KEY:-}"
-      FN2TRAKT_COOKIE_SECURE: "${FN2TRAKT_COOKIE_SECURE:-false}"
-      FN2TRAKT_SESSION_DAYS: "${FN2TRAKT_SESSION_DAYS:-30}"
-      FN2TRAKT_ADMIN_USERNAME: "${FN2TRAKT_ADMIN_USERNAME:-}"
-      FN2TRAKT_ADMIN_PASSWORD: "${FN2TRAKT_ADMIN_PASSWORD:-}"
-      FN2TRAKT_TRAKT_CLIENT_ID: "${FN2TRAKT_TRAKT_CLIENT_ID:-}"
-      FN2TRAKT_TRAKT_CLIENT_SECRET: "${FN2TRAKT_TRAKT_CLIENT_SECRET:-}"
-      FN2TRAKT_TRAKT_TRUST_ENV: "${FN2TRAKT_TRAKT_TRUST_ENV:-true}"
-      FN2TRAKT_SYNC_ENABLED: "${FN2TRAKT_SYNC_ENABLED:-true}"
-      FN2TRAKT_SYNC_INTERVAL_MINUTES: "${FN2TRAKT_SYNC_INTERVAL_MINUTES:-5}"
+      FN2TRAKT_COOKIE_SECURE: "false"
+      FN2TRAKT_SESSION_DAYS: "30"
+      FN2TRAKT_SYNC_ENABLED: "true"
+      FN2TRAKT_SYNC_INTERVAL_MINUTES: "5"
+      FN2TRAKT_TRAKT_TRUST_ENV: "true"
+      # 需要代理访问 Trakt 时取消注释，改成你的代理地址
+      # HTTPS_PROXY: "http://192.168.1.2:7890"
+      # HTTP_PROXY: "http://192.168.1.2:7890"
+      # NO_PROXY: "localhost,127.0.0.1"
+
     volumes:
-      - "${DATA_DIR:-./data}:/data"
-      - "${FNTV_DB_DIR:-./DB}:/fntv"
+      # 改这里：左边是宿主机路径。./data 存放应用 SQLite、密钥与备份
+      - ./data:/data
+      # 飞牛数据库「目录」（不是 trimmedia.db 单文件）。不要加 :ro
+      - /usr/local/apps/@appdata/trim.media/database:/fntv
+
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/api/health || exit 1"]
       interval: 30s
       timeout: 5s
       start_period: 20s
       retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

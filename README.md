@@ -35,48 +35,56 @@
 | --- | --- |
 | ![API](docs/images/developer-api.png) | ![Webhook](docs/images/developer-webhook.png) |
 
-## 🚀 快速开始
+## 🚀 快速开始（Docker Compose）
 
-### 环境要求
+推荐用 Docker Compose 部署：一条命令起服务，**不需要 `.env`，不需要装 Python / Node**，配置全部写在 `docker-compose.yml` 里。
 
-- Python **3.11+**（开发验证于 3.13）
-- Node.js **18+**（只在修改前端时需要）
-- 能访问 `api.trakt.tv` / `auth.trakt.tv`（中国大陆网络可能需要代理）
+### 1. 准备 compose 文件
 
-### 1. 安装后端
+在 NAS 上建一个目录，把仓库根目录的 `docker-compose.yml` 放进去：
 
 ```bash
-python3 -m venv backend/.venv
-backend/.venv/bin/pip install -r backend/requirements.txt
-cp .env.example .env
+mkdir -p /vol1/docker/fn2trakt && cd /vol1/docker/fn2trakt
+curl -O https://raw.githubusercontent.com/Senquan007/FN2Trakt/main/docker-compose.yml
 ```
 
-### 2. 启动
+（也可以直接从发布包或仓库根目录复制这个文件）
+
+### 2. 改两处
+
+打开 `docker-compose.yml`，只有两处需要按你的机器改：
+
+```yaml
+    ports:
+      - "8213:8080"        # 宿主机端口；容器内固定 8080，可改成 8080 / 18080 等空闲端口
+    volumes:
+      - ./data:/data                                         # 应用 SQLite、密钥、备份
+      - /usr/local/apps/@appdata/trim.media/database:/fntv    # 飞牛数据库目录，不要加 :ro
+```
+
+其余 `environment` 都是容器内路径与默认值，保持原样即可。
+
+### 3. 启动
 
 ```bash
-cd backend
-.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8080
+docker compose up -d
+docker compose logs -f      # 看到 FN2Trakt started 后按 Ctrl+C 退出日志
 ```
 
-打开 <http://localhost:8080>。前端已经构建在 `backend/static`，无需单独启动 Node。
+镜像会自动从 Docker Hub 拉取 `spikeding/fn2trakt:4.1.4`（amd64 / arm64 都有）；网络不顺时先单独执行一次 `docker pull spikeding/fn2trakt:4.1.4`。
 
-也可以：
+打开 `http://<NAS-IP>:8213`，进入初始化向导。
 
-```bash
-make install   # 创建 venv + 安装依赖 + 安装前端依赖
-make run       # 启动 8080
-```
-
-### 3. 初始化
+### 4. 初始化
 
 首次访问会进入初始化向导：
 
-1. 自动检测 `DB/trimmedia.db`（检测失败可在「系统设置」改路径）。
+1. 自动检测 `/fntv/trimmedia.db`（检测失败可在「系统设置」改路径）。
 2. 创建管理员账号。
 3. 选择要绑定的飞牛用户（例如 `yourname`）。
 4. 管理员进入「系统设置 → Trakt 应用凭据」新建一套凭据；普通用户不需要配置。
 
-### 4. 创建 Trakt 应用（新版只需要 Client ID）
+### 5. 创建 Trakt 应用（新版只需要 Client ID）
 
 Trakt 在 2026 年更新了应用体系：新应用默认使用 **PKCE**，**不再签发 Client Secret**。你看到的 “Client Secret: Not issued” 是正常现象，设备授权只用 Client ID 即可。
 
@@ -94,7 +102,7 @@ Trakt 在 2026 年更新了应用体系：新应用默认使用 **PKCE**，**不
 > - 旧版 OAuth 应用仍可填写 Client Secret；新版应用留空即可。
 > - 凭据保存在本地 SQLite；不会发送给除 Trakt 之外的任何服务。
 
-### 5. 绑定 Trakt
+### 6. 绑定 Trakt
 
 1. 点击「生成 Trakt 授权码」
 2. 验证码出现后自动复制，页面顶部居中弹出小提示：**「已自动复制授权码，5s 后在新标签页打开 Trakt」**
@@ -104,7 +112,7 @@ Trakt 在 2026 年更新了应用体系：新应用默认使用 **PKCE**，**不
 
 > 浏览器通常会拦截「定时器到点才 window.open」的弹窗。为保证能自动打开新标签页，验证码就绪后会先创建一个「正在准备 Trakt 授权页」的新标签页，5 秒后把该标签页导航到 Trakt；FN2Trakt 页面始终保留。
 
-### 6. 读取数据并同步
+### 7. 读取数据并同步
 
 1. 打开「观看记录」，点左上角 **刷新并同步**：一次点击即读取飞牛数据库、上传新完成的记录、刷新列表
 2. 或者等定时任务（默认每 5 分钟自动读库 + 上传，无需手动操作）
@@ -113,64 +121,44 @@ Trakt 在 2026 年更新了应用体系：新应用默认使用 **PKCE**，**不
 
 > 只读场景不需要任何写权限；如果要用「写入飞牛」，需要额外给数据库写权限，见[飞牛数据库权限与 Docker 挂载](docs/fntv-permissions.md)。
 
-## 🐳 Docker Compose
+## 🐳 Docker 运维
 
-仓库带有 `Dockerfile` 和 `docker-compose.yml`，镜像内部固定监听 8080，宿主机端口、数据目录和飞牛库目录都可以通过 `.env` 调整。
+| 要做的事 | 命令 |
+| --- | --- |
+| 改端口 / 挂载 | 改 `docker-compose.yml` 后执行 `docker compose up -d --force-recreate`（`restart` 不会改变挂载） |
+| 更新版本 | 改 `image:` 标签后执行 `docker compose pull && docker compose up -d` |
+| 查看日志 | `docker compose logs -f` |
+| 停止 / 卸载 | `docker compose down`（宿主机 `./data` 不受影响） |
 
-```bash
-cp .env.docker.example .env
-# 编辑 .env：DATA_DIR / FNTV_DB_DIR / FN2TRAKT_HOST_PORT
-docker compose up -d --build
-```
+- 容器内端口固定 `8080`，只能改冒号左边的宿主机端口
+- `/data` 必须可写；`/fntv` 必须是**目录**（不是 `trimmedia.db` 单文件），且不要加 `:ro`
+- 数据落在宿主机 `./data/fn2trakt.db`；写入飞牛 / 恢复的备份在 `./data/backups/`
+- 想自己构建镜像：`docker compose -f docker-compose.build.yml up -d --build`，配置同样写在 compose 里，不用 `.env`
 
-不想在本机构建时，直接拉取已发布的镜像：
+完整参数与排错见 [docs/docker.md](docs/docker.md)。
 
-```bash
-docker pull spikeding/fn2trakt:4.1.4
-```
+## 🧑‍💻 从源码运行（开发 / 调试）
 
-`.env` 中设置：
-
-```dotenv
-FN2TRAKT_IMAGE=spikeding/fn2trakt:4.1.4
-```
+需要 Python **3.11+**（开发验证于 3.13）；改前端还需要 Node.js **18+**。
 
 ```bash
-docker compose up -d --no-build
+python3 -m venv backend/.venv
+backend/.venv/bin/pip install -r backend/requirements.txt
+
+cd backend
+.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
-离线环境也可以用 `docker/image/` 下的镜像包 `docker load -i` 载入，再把 `FN2TRAKT_IMAGE` 指向载入的标签。
+打开 <http://localhost:8080>。前端已构建在 `backend/static`，无需单独启动 Node。
 
-打开 `http://<NAS-IP>:<FN2TRAKT_HOST_PORT>`，按初始化向导操作。
+也可以：
 
-> **飞牛数据库挂载注意**：常规同步只要只读；v4 的「写入飞牛」需要 `/fntv` 可写、主库 `rw`。`/fntv` 不要加 `:ro`，否则会出现 `could not read full fnTV library: unable to open database file`。完整排查见[飞牛数据库权限与 Docker 挂载](docs/fntv-permissions.md)。
-
-关键变量：
-
-| 变量 | 默认 | 说明 |
-| --- | --- | --- |
-| `FN2TRAKT_IMAGE` | `fn2trakt:4.1.4` | 镜像标签（拉取用 `spikeding/fn2trakt:4.1.4`） |
-| `FN2TRAKT_HOST_PORT` | `8080` | 宿主机端口，容器内部固定 8080 |
-| `DATA_DIR` | `./data` | 应用数据目录，挂载到容器 `/data` |
-| `FNTV_DB_DIR` | `./DB` | 飞牛数据库目录；常规同步只读，v4 写入飞牛需可写 |
-| `FNTV_DB_FILE` | `trimmedia.db` | 飞牛数据库文件名 |
-| `PUID` / `PGID` | `1000` | 容器运行用户，NAS 上用 `id` 查看 |
-| `FN2TRAKT_SECRET_KEY` | 自动生成 | 生产环境建议显式设置 |
-
-NAS 示例：
-
-```dotenv
-FN2TRAKT_HOST_PORT=8080
-DATA_DIR=/vol1/docker/fn2trakt/data
-FNTV_DB_DIR=/vol1/@appdata/trim.media/database
-FNTV_DB_FILE=trimmedia.db
-PUID=1000
-PGID=1000
+```bash
+make install   # 创建 venv + 安装依赖
+make run       # 启动 8080
 ```
 
-应用数据库位于 `DATA_DIR/fn2trakt.db`；回填备份位于 `DATA_DIR/backups/`。常规同步只读；v4 写入飞牛需要临时写权限，执行前会备份。
-
-详细说明见 [docs/docker.md](docs/docker.md)。
+> 源码运行同样不需要 `.env`：默认值即可启动，日常配置在「系统设置」里改；确需改默认值（数据目录、飞牛库路径）时用环境变量，或改 `backend/app/config.py` 的默认值。
 
 ## 🎨 UI 设计
 
@@ -345,13 +333,13 @@ FN2Trakt/
 ├── DB/                     # 放置 trimmedia.db（数据库文件不提交）
 ├── data/                   # 运行时 SQLite（fn2trakt.db）
 ├── logo/                   # 品牌 Logo 源文件（主 Logo、Trakt 标识）
-├── docker/                 # 容器 entrypoint
+├── docker/                 # 容器 entrypoint、镜像推送脚本
 ├── Dockerfile
-├── docker-compose.yml
+├── docker-compose.yml      # 部署用（拉取镜像，推荐）
+├── docker-compose.build.yml# 源码构建镜像
 ├── docs/                   # 数据库结构、API、截图
 ├── scripts/                # dev / run 脚本
-├── Makefile
-└── .env.example
+└── Makefile
 ```
 
 ## 📦 发布物分类
@@ -359,20 +347,25 @@ FN2Trakt/
 ```text
 his/        历史版本（V1 / V2）
 release/    正式发布包与 SHA-256
-docker/     x86_64 镜像、纯拉取 Compose、多架构推送脚本
+docker/     容器 entrypoint、多架构镜像推送脚本
 test/       已测试的中间包（不对外分发）
 ```
 
 正式发布包不包含个人数据库、运行数据、测试数据库和带个人观看记录的截图。
 
-## ⚙️ 环境变量
+## ⚙️ 配置项
 
-复制 `.env.example` 为 `.env`。所有变量以 `FN2TRAKT_` 开头；**页面里保存的设置优先于环境变量**。
+配置有两处来源，**不需要 `.env`**：
+
+- **Docker 部署**：直接写在 `docker-compose.yml` 的 `environment` 里（见上面的文件）
+- **日常使用**：「系统设置」页面，保存后立即生效，**优先级高于环境变量 / compose**
+
+所有变量以 `FN2TRAKT_` 开头：
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `FN2TRAKT_DATA_DIR` | `./data` | 应用数据目录（SQLite、密钥） |
-| `FN2TRAKT_FNTV_DB_PATH` | `./DB/trimmedia.db` | 飞牛数据库路径 |
+| `FN2TRAKT_DATA_DIR` | `./data`（容器内 `/data`） | 应用数据目录（SQLite、密钥） |
+| `FN2TRAKT_FNTV_DB_PATH` | `./DB/trimmedia.db`（容器内 `/fntv/trimmedia.db`） | 飞牛数据库路径 |
 | `FN2TRAKT_SECRET_KEY` | 自动生成 | 会话签名密钥；多实例部署时必须固定 |
 | `FN2TRAKT_SESSION_DAYS` | `30` | 登录会话天数 |
 | `FN2TRAKT_COOKIE_SECURE` | `false` | HTTPS 部署时设为 `true` |
@@ -385,9 +378,9 @@ test/       已测试的中间包（不对外分发）
 | `FN2TRAKT_TRAKT_TRUST_ENV` | `true` | 是否使用系统 HTTP(S)_PROXY |
 | `FN2TRAKT_SYNC_INTERVAL_MINUTES` | `5` | 默认同步间隔（页面可改） |
 | `FN2TRAKT_SYNC_ENABLED` | `true` | 默认是否启用定时同步（页面可改） |
-| `FN2TRAKT_HOST` / `FN2TRAKT_PORT` | `0.0.0.0` / `8080` | 仅 `python -m app.main` 时生效 |
+| `FN2TRAKT_HOST` / `FN2TRAKT_PORT` | `0.0.0.0` / `8080` | 监听地址，容器内固定 8080 |
 
-> 中国大陆访问 Trakt 不稳定时，可给进程设置 `HTTPS_PROXY`，并保持 `FN2TRAKT_TRAKT_TRUST_ENV=true`。
+> 中国大陆访问 Trakt 不稳定时：compose 里取消注释 `HTTPS_PROXY` / `HTTP_PROXY`，保持 `FN2TRAKT_TRAKT_TRUST_ENV: "true"`；源码运行则给进程设置同名环境变量。
 
 ## 🔌 API 概览
 
@@ -466,11 +459,11 @@ curl -s -H "Cookie: fn2t_session=<你的 session>" \
 
 ## 🐳 Docker 交付物
 
-- `Dockerfile`：多阶段构建（Node 构建前端 → Python 运行 FastAPI）
-- `docker-compose.yml`：源码构建部署
-- `docker/deploy/`：纯拉取镜像的 Compose、`.env.example`、多架构推送脚本
-- `docker/image/`：x86_64 离线镜像包与 SHA-256
-- 容器内端口固定 `8080`；compose 默认给 `/fntv` 可写以支持 v4 写入，普通同步仍以只读模式打开数据库
+- `docker-compose.yml`：**推荐**，直接拉取 `spikeding/fn2trakt:4.1.4`，配置写在文件内，无 `.env`
+- `docker-compose.build.yml`：源码构镜像（多阶段：Node 构建前端 → Python 运行 FastAPI）
+- `Dockerfile` + `docker/entrypoint.sh`：镜像构建与容器启动
+- `docker/push.sh`：把 amd64 / arm64 合并成多架构清单并推送到 Docker Hub
+- 容器内端口固定 `8080`；compose 里 `/fntv` 以可写方式挂载以支持 v4 写入，普通同步仍以只读模式打开数据库
 - 镜像不包含数据库、密钥或 Token
 
 完整说明见 [docs/docker.md](docs/docker.md)。

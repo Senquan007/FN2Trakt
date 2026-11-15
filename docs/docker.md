@@ -1,50 +1,37 @@
 # Docker / Docker Compose 部署
 
+推荐方式：**一份 `docker-compose.yml`，不用 `.env`**。所有配置直接写在 compose 文件里，改完 `docker compose up -d` 即生效。
+
 ## 快速开始
 
 ```bash
-cp .env.docker.example .env
-# 按需修改 .env 中的路径和端口
-docker compose up -d --build
+mkdir -p /vol1/docker/fn2trakt && cd /vol1/docker/fn2trakt
+curl -O https://raw.githubusercontent.com/Senquan007/FN2Trakt/main/docker-compose.yml
+# 改两处：宿主机端口、飞牛数据库目录
+docker compose up -d
 ```
 
-或者直接使用已发布的镜像，跳过构建：
+打开 `http://<NAS-IP>:8213`，按初始化向导操作。
 
-```bash
-docker pull spikeding/fn2trakt:4.1.4
-# .env 中设置 FN2TRAKT_IMAGE=spikeding/fn2trakt:4.1.4
-docker compose up -d --no-build
+`docker-compose.yml` 里需要按你的机器改的只有两处：
+
+```yaml
+    ports:
+      - "8213:8080"        # 冒号左边是宿主机端口，容器内固定 8080
+    volumes:
+      - ./data:/data
+      - /usr/local/apps/@appdata/trim.media/database:/fntv
 ```
 
-打开 `http://<NAS-IP>:<FN2TRAKT_HOST_PORT>`，按初始化向导操作。
-
-如果不想使用默认的 `.env`，可以指定其他文件：
-
-```bash
-docker compose --env-file my.env up -d
-```
+其余 `environment` 都是容器内路径与默认值，保持原样。
 
 ## 目录与端口
 
-`.env` 中最重要的四个变量：
-
-| 变量 | 默认 | 说明 |
+| 项目 | 位置 | 说明 |
 | --- | --- | --- |
-| `FN2TRAKT_HOST_PORT` | `8080` | 宿主机端口；容器内部固定 8080 |
-| `DATA_DIR` | `./data` | 宿主机上的应用数据目录，挂载到容器 `/data` |
-| `FNTV_DB_DIR` | `./DB` | 飞牛数据库所在目录；常规同步只读，v4 写入飞牛时需要可写 |
-| `FNTV_DB_FILE` | `trimmedia.db` | 目录下的数据库文件名 |
-
-NAS 示例：
-
-```dotenv
-FN2TRAKT_HOST_PORT=8080
-DATA_DIR=/vol1/docker/fn2trakt/data
-FNTV_DB_DIR=/vol1/@appdata/trim.media/database
-FNTV_DB_FILE=trimmedia.db
-PUID=1000
-PGID=1000
-```
+| 宿主机端口 | `ports:` 左边 | 默认 `8213`，可改 `8080` / `18080` 等 |
+| 应用数据 | `./data` → `/data` | `fn2trakt.db`、`.secret_key`、`backups/` |
+| 飞牛数据库 | 宿主机目录 → `/fntv` | 必须是**目录**，不是 `trimmedia.db` 单文件 |
 
 容器内路径：
 
@@ -53,72 +40,68 @@ PGID=1000
 /fntv/trimmedia.db     飞牛数据库（常规只读；写入飞牛时需要可写）
 ```
 
-`DATA_DIR` 必须可写；entrypoint 会按 `PUID:PGID` 修正目录所有者。`FNTV_DB_DIR` 常规同步只需可读可进入；使用「写入飞牛」时需要目录可写、主库 `rw`，且挂载不能加 `:ro`。
+`/data` 必须可写；entrypoint 会按 `PUID:PGID` 修正目录所有者。`/fntv` 常规同步只需可读可进入；使用「写入飞牛」时需要目录可写、主库 `rw`，且挂载不能加 `:ro`。
 
 ## 更新
 
 ```bash
-docker compose build --pull
+# 改 compose 里的 image 标签（例如 4.1.4 -> 4.2.0）后
+docker compose pull
 docker compose up -d
+```
+
+改端口或挂载后必须重建容器，`restart` 不会应用新的挂载：
+
+```bash
+docker compose up -d --force-recreate
 ```
 
 ## 备份
 
-应用数据库在 `DATA_DIR/fn2trakt.db`。写入飞牛 / 恢复操作会自动备份到 `DATA_DIR/backups/`。
+应用数据库在 `./data/fn2trakt.db`。写入飞牛 / 恢复操作会自动备份到 `./data/backups/`。
 
 ## 常见问题
 
-- **端口被占用**：改 `FN2TRAKT_HOST_PORT`，例如 `18080`。
-- **无法读取飞牛库**：确认 `FNTV_DB_DIR` 指向包含 `trimmedia.db` 的目录，并且容器用户有读权限。
-- **权限错误**：把 `.env` 中 `PUID/PGID` 改成 `id -u` / `id -g` 的结果。
+- **端口被占用**：改 `ports:` 左边的数字，例如 `"18080:8080"`。
+- **无法读取飞牛库**：确认挂载的是包含 `trimmedia.db` 的**目录**，并且容器用户（`PUID`）有读权限。
+- **权限错误**：把 compose 里的 `PUID` / `PGID` 改成 `id -u` / `id -g` 的结果。
 - **`could not read full fnTV library: unable to open database file`**：`/fntv` 挂载成了 `:ro` 或目录不可写（WAL 无法创建 `-shm`）。去掉 `:ro` 后 `docker compose up -d --force-recreate`，详见 [fntv-permissions.md](fntv-permissions.md)。
-- **写入飞牛 400**：先按上面的权限文档确认 `READ_OK` 与 `WRITE_OK` 都通过，再看接口 `detail`。
-- **首次启动没有管理员**：打开首页会进入初始化向导；也可以使用 `FN2TRAKT_ADMIN_USERNAME` / `FN2TRAKT_ADMIN_PASSWORD` 自动创建。
+- **写入飞牛 400**：先按权限文档确认 `READ_OK` 与 `WRITE_OK` 都通过，再看接口 `detail`。
+- **首次启动没有管理员**：打开首页会进入初始化向导；也可以在 compose 的 `environment` 里加 `FN2TRAKT_ADMIN_USERNAME` / `FN2TRAKT_ADMIN_PASSWORD` 自动创建。
 
-## 使用预构建 x86 镜像
+## 源码构建镜像
 
-如果不想在 NAS 上构建，可以直接加载 amd64 镜像包：
-
-```bash
-docker load -i docker/image/fn2trakt-4.1.4-amd64.tar.gz
-```
-
-确认镜像：
+日常部署不需要这一步，用 `docker-compose.yml` 直接拉取镜像即可。
 
 ```bash
-docker images fn2trakt
-# fn2trakt:4.1.4-amd64
+docker compose -f docker-compose.build.yml up -d --build
 ```
 
-`.env` 中设置：
+`docker-compose.build.yml` 同样不使用 `.env`，配置与 `docker-compose.yml` 一致，只是把 `image:` 换成 `build:`。
 
-```dotenv
-FN2TRAKT_IMAGE=fn2trakt:4.1.4-amd64
-```
+## 离线 / 跨架构
 
-然后启动，不需要 `--build`：
+镜像已经发布到 Docker Hub：`spikeding/fn2trakt:4.1.4`（多架构清单，amd64 与 arm64 自动匹配）。
+
+需要离线搬运时，在能联网的机器上导出：
 
 ```bash
-docker compose up -d --no-build
+docker pull spikeding/fn2trakt:4.1.4
+docker save spikeding/fn2trakt:4.1.4 | gzip > fn2trakt-4.1.4.tar.gz
 ```
 
-镜像包约 74 MB，适用于 `linux/amd64`（绝大多数 x86 NAS）。Apple Silicon 上的本地镜像是 `fn2trakt:4.1.4`，两者不要混用。
+拷到目标机器后载入，并把 compose 里的 `image:` 保持为同一个标签：
 
-## 镜像架构
+```bash
+docker load -i fn2trakt-4.1.4.tar.gz
+docker compose up -d
+```
 
-镜像会在构建它的机器上生成对应架构：
-
-- 在 Apple Silicon Mac 上构建的是 `linux/arm64`
-- 在大多数 x86 NAS 上构建的是 `linux/amd64`
-
-如果构建机和部署机架构不同，请在部署机上执行 `docker compose build`，或在构建机上使用：
+只构建单一架构时：
 
 ```bash
 docker buildx build --platform linux/amd64 -t fn2trakt:4.1.4-amd64 --load .
-# 传到 NAS 后
-docker load -i fn2trakt-4.1.4-amd64.tar
+# 载入后把 compose 的 image 改成 fn2trakt:4.1.4-amd64
 ```
-
-然后把 `.env` 里的 `FN2TRAKT_IMAGE` 改成对应的镜像标签。
 
 > v4 的「Trakt → 飞牛写入」需要目录写权限与主库 `rw`，详见 [fntv-writeback.md](fntv-writeback.md) 与 [fntv-permissions.md](fntv-permissions.md)。

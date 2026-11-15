@@ -13,11 +13,17 @@
 - **版本号统一来源**：后端以 `app.__version__` 为准（`/api/health`、Webhook 载荷、FastAPI 元信息共用），前端在构建时从 `frontend/package.json` 注入，侧边栏与「运行信息」不再写死 `v4.0.0`，发版只改一处。
 - 「Trakt 绑定」卡新增「应用凭据」行（当前保存了几套凭据），「运行信息」移除重复的凭据数量。
 
+### 部署方式
+
+- **优先 Docker Compose，不再需要 `.env`**：根目录 `docker-compose.yml` 改为自包含配置（镜像 `spikeding/fn2trakt:4.1.4`、端口、挂载、环境变量全部写死可改），拿到文件改两处即可 `docker compose up -d`。
+- 源码构建拆到 `docker-compose.build.yml`；删除 `.env.docker.example`、`.env.example` 与 `docker/deploy/`，推送脚本移到 `docker/push.sh`，`Makefile` 不再复制 `.env`。
+- README「快速开始」改为 compose 优先：取文件 → 改端口与飞牛库路径 → 启动；从源码运行降为可选章节。
+
 ### 文档
 
 - **重写《飞牛数据库权限与 Docker 挂载》**：区分「常规同步只需读」与「写入飞牛需要读写」两种场景，补上 `docker inspect` 检查 RW、ACL 授予主库 `rw`（不再是 `r`）、`READ_OK` / `WRITE_OK` 双验证、SQLite 完整读取与 `journal_mode` 检查、`/fntv` 只能只读时的降级方案，以及「写入飞牛」400 的 `detail` 排查表和最新报错 `could not read full fnTV library: unable to open database file`。
 - **README 更新到 v4.1.4**：补「刷新并同步」与「观看记录匹配媒体列」说明、Docker 拉取镜像命令（`spikeding/fn2trakt:4.1.4`）、`/fntv` 挂载注意事项，新增「常见问题排查」章节（读库失败、写入 400、同步不自动发生、飞牛看不到 Trakt 记录）。
-- `docs/docker.md`、`docker/README.md`、`docker/deploy/push.sh` 的版本号与镜像标签统一到 4.1.4。
+- `docs/docker.md`、`docker/README.md` 重写为 compose 优先（无 `.env`），版本号与镜像标签统一到 4.1.4。
 
 ### 升级说明
 
